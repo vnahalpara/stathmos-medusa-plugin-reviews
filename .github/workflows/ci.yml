@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, typecheck & build (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Proves the package can actually be published: plugin:build is what
+      # produces .medusa/server, the only directory shipped in "files".
+      - name: Build plugin
+        run: npm run build
+
+  integration:
+    name: Integration tests (medusa ${{ matrix.medusa }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two most recent Medusa minors, per the compatibility matrix in
+        # the README. Add the new minor here and drop the oldest on release.
+        medusa: ['2.18']
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: medusa_plugin_reviews_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/medusa_plugin_reviews_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Pin Medusa to ${{ matrix.medusa }}
+        run: |
+          npm install --no-save \
+            "@medusajs/framework@${{ matrix.medusa }}" \
+            "@medusajs/medusa@${{ matrix.medusa }}" \
+            "@medusajs/test-utils@${{ matrix.medusa }}"
+
+      - name: Integration tests
+        run: npm test
