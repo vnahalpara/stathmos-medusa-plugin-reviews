@@ -13,8 +13,5 @@ module.exports = defineConfig({
       cookieSecret: process.env.COOKIE_SECRET || 'test',
     },
   },
-  // R1: registers the Phase 0 smoke module, not the review module. The
-  // review module does not exist until Task 2, which switches this line
-  // over; registering a non-existent module here would fail app boot.
-  modules: [{ resolve: './src/modules/smoke' }],
+  modules: [{ resolve: './src/modules/review' }],
 })
