@@ -68,6 +68,25 @@ Then run migrations:
 npx medusa db:migrate
 ```
 
+### Installing in a pnpm project
+
+pnpm's default isolated linker hides plugins from Medusa. Medusa resolves
+plugin modules from inside `@medusajs/utils`, which lives in pnpm's virtual
+store and cannot see your app's `node_modules`, so migration fails with:
+
+```
+Cannot find module '@stathmos/medusa-plugin-reviews/.medusa/server/src/modules/…'
+```
+
+Hoist the package in your `.npmrc` and reinstall:
+
+```ini
+public-hoist-pattern[]=@stathmos/*
+```
+
+npm and yarn need no such workaround. This is a pnpm/Medusa interaction, not
+specific to this plugin — it affects any Medusa plugin that ships a module.
+
 ## Development
 
 This repo is developed against a local Medusa host application:
