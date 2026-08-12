@@ -66,6 +66,18 @@ jobs:
 
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/medusa_plugin_reviews_test
+      # medusaIntegrationTestRunner builds its own maintenance/app connection
+      # from these DB_* vars (see @medusajs/test-utils dist/database.js and
+      # medusa-test-runner-utils/postgres-template.js), independent of
+      # DATABASE_URL above. DB_HOST/DB_PORT/DB_USERNAME default to
+      # localhost/5432/postgres, matching the postgres service below, but
+      # DB_PASSWORD defaults to "" (no password) — the official postgres
+      # image requires the configured password on TCP connections once
+      # POSTGRES_PASSWORD is set, so it must be supplied explicitly.
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
 
     steps:
       - uses: actions/checkout@v4
