@@ -66,4 +66,5 @@ Docs-only or CI-only changes do not need one.
 ## Security
 
 Please do not open public issues for security problems. Report them privately
-to the maintainers instead.
+via [GitHub security advisories](https://github.com/vnahalpara/stathmos-medusa-plugin-reviews/security/advisories/new)
+instead.

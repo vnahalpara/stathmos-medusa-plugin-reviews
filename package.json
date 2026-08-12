@@ -3,6 +3,14 @@
   "version": "0.0.1",
   "description": "Product reviews for Medusa v2 with photo and video support, a customer media gallery API, merchant replies, helpful votes and live-editable moderation settings.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vnahalpara/stathmos-medusa-plugin-reviews.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vnahalpara/stathmos-medusa-plugin-reviews/issues"
+  },
+  "homepage": "https://github.com/vnahalpara/stathmos-medusa-plugin-reviews#readme",
   "publishConfig": {
     "access": "public"
   },
