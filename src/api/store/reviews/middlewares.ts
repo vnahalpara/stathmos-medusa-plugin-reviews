@@ -5,6 +5,11 @@ import {
   validateAndTransformQuery,
 } from '@medusajs/framework'
 import { z } from '@medusajs/framework/zod'
+import multer from 'multer'
+
+// Files are held in memory only long enough to sniff and re-encode them;
+// the File Module owns persistence.
+const upload = multer({ storage: multer.memoryStorage() })
 
 export const CreateReviewSchema = z
   .object({
@@ -55,5 +60,10 @@ export const storeReviewMiddlewares: MiddlewareRoute[] = [
     matcher: '/store/products/:id/reviews',
     method: 'GET',
     middlewares: [validateAndTransformQuery(ListProductReviewsSchema, {})],
+  },
+  {
+    matcher: '/store/reviews/uploads',
+    method: 'POST',
+    middlewares: [upload.array('files')],
   },
 ]
