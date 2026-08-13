@@ -1,6 +1,7 @@
 import { medusaIntegrationTestRunner } from '@medusajs/test-utils'
 import { REVIEW_MODULE } from '../../src/modules/review'
 import { recomputeReviewStats } from '../../src/workflows/steps/recompute-review-stats'
+import { updateReviewSettingsWorkflow } from '../../src/workflows/update-review-settings'
 import { getPublishableKeyHeaders } from '../helpers/store'
 
 medusaIntegrationTestRunner({
@@ -10,6 +11,20 @@ medusaIntegrationTestRunner({
 
     beforeAll(async () => {
       storeHeaders = await getPublishableKeyHeaders(getContainer())
+    })
+
+    // Settings resolve through the Cache Module (see
+    // src/settings/get-review-settings.ts), which the DB-restore-per-test
+    // harness does not reset. Any test that flips a setting must reset it
+    // here or it leaks into the next test - same convention as
+    // store-submit.spec.ts's afterEach.
+    afterEach(async () => {
+      const service = getContainer().resolve(REVIEW_MODULE)
+      const rows = await service.listReviewSettings()
+      if (rows.length) {
+        await service.deleteReviewSettings(rows.map((r) => r.id))
+      }
+      await updateReviewSettingsWorkflow(getContainer()).run({ input: {} })
     })
 
     beforeEach(async () => {
@@ -88,6 +103,16 @@ medusaIntegrationTestRunner({
 
         expect(response.data.reviews[0].rating).toEqual(5)
       })
+
+      it('404s when reviews are disabled', async () => {
+        await updateReviewSettingsWorkflow(getContainer()).run({ input: { enabled: false } })
+
+        const response = await api
+          .get('/store/products/prod_read/reviews', { headers: storeHeaders })
+          .catch((e) => e.response)
+
+        expect(response.status).toEqual(404)
+      })
     })
 
     describe('GET /store/products/:id/reviews/stats', () => {
@@ -109,6 +134,16 @@ medusaIntegrationTestRunner({
         })
 
         expect(response.data).toMatchObject({ count: 0, average: 0 })
+      })
+
+      it('404s when reviews are disabled', async () => {
+        await updateReviewSettingsWorkflow(getContainer()).run({ input: { enabled: false } })
+
+        const response = await api
+          .get('/store/products/prod_read/reviews/stats', { headers: storeHeaders })
+          .catch((e) => e.response)
+
+        expect(response.status).toEqual(404)
       })
     })
   },

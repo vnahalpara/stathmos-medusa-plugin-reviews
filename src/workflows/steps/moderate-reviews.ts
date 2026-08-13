@@ -20,8 +20,13 @@ export const moderateReviewsStep = createStep(
     const service = container.resolve(REVIEW_MODULE)
 
     const existing = await service.listReviews({ id: input.ids })
+    const existingIds = new Set(existing.map((review) => review.id))
 
-    if (existing.length !== input.ids.length) {
+    // Set membership, not a count comparison: a batch that repeats the same
+    // id twice under-counts against existing.length even though every id is
+    // valid, which used to throw a false NOT_FOUND. This throws only when an
+    // id genuinely has no matching review.
+    if (input.ids.some((id) => !existingIds.has(id))) {
       throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Review not found')
     }
 
@@ -31,8 +36,11 @@ export const moderateReviewsStep = createStep(
       rejection_reason: review.rejection_reason,
     }))
 
+    // Built from existingIds (deduped by the query above), not input.ids
+    // directly - passing the same id twice to updateReviews would otherwise
+    // hand the ORM two write rows for one primary key in the same batch.
     const updated = await service.updateReviews(
-      input.ids.map((id) => ({
+      [...existingIds].map((id) => ({
         id,
         status: input.status,
         rejection_reason: input.status === 'rejected' ? input.rejection_reason ?? null : null,
