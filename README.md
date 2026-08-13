@@ -4,13 +4,15 @@ Product reviews for [Medusa v2](https://medusajs.com) with photo and video
 support, a customer media gallery API, merchant replies, helpful votes, and
 moderation settings a merchant can change from the admin without a redeploy.
 
-> **Status: pre-release (Phase 1).** The core review module has shipped:
-> submitting, listing, moderating and summarizing reviews, plus DB-backed
-> settings editable from the admin without a redeploy. **Not yet
-> implemented: photo/video media, the customer gallery API, helpful votes,
-> merchant replies, and review editing.** Do not install this from npm
-> expecting those features. See [API](#api) for what works today and
-> [Roadmap](#roadmap) for what's next.
+> **Status: pre-release (Phase 2).** The core review module and photo/video
+> media have shipped: submitting, listing, moderating and summarizing
+> reviews; DB-backed settings editable from the admin without a redeploy;
+> and photo/video uploads with content-sniffed validation, EXIF stripping,
+> merchant-configurable size/count limits, and an hourly sweep of
+> never-attached uploads. **Not yet implemented: the customer gallery API,
+> helpful votes, merchant replies, and review editing.** Do not install this
+> from npm expecting those features. See [API](#api) for what works today
+> and [Roadmap](#roadmap) for what's next.
 
 ## Why another reviews plugin
 
@@ -116,28 +118,98 @@ is safe and recommended to clean it up.
 
 ## API
 
-Nine endpoints ship in Phase 1:
+Eleven endpoints ship across Phases 1–2:
 
 ```
 POST   /store/reviews                       Submit a review (guest or customer, per settings)
 GET    /store/products/:id/reviews          List a product's approved reviews
 GET    /store/products/:id/reviews/stats    Denormalized rating summary + breakdown
+POST   /store/reviews/uploads               Upload review photos/videos (multipart, field name "files")
 GET    /admin/reviews                       List/filter reviews (status, product_id, rating)
 POST   /admin/reviews/:id/approve           Approve one review
 POST   /admin/reviews/:id/reject            Reject one review, with a reason
 POST   /admin/reviews/batch/status          Bulk approve/reject/reset by id
+DELETE /admin/reviews/media/:id             Remove a single media item
 GET    /admin/reviews/settings              Read the current settings
 POST   /admin/reviews/settings              Update settings (partial, no redeploy)
 ```
 
-All three `/store/*` routes 404 outright when the `enabled` setting is off.
-Verified-purchase status requires an authenticated customer — matching a
-guest's self-supplied email would make the badge forgeable.
+The three review-facing `/store/*` routes above (`POST /store/reviews`,
+`GET /store/products/:id/reviews`, `GET /store/products/:id/reviews/stats`)
+404 outright when the `enabled` setting is off. `POST /store/reviews/uploads`
+is gated the same way but responds **400**, not 404, when reviews or media
+uploads are disabled (`enabled` or `allow_media` off) — the same `NOT_ALLOWED`
+path used for the video/format/size checks below, rather than the `NOT_FOUND`
+the other three routes use. Verified-purchase status requires an
+authenticated customer — matching a guest's self-supplied email would make
+the badge forgeable.
 
-**Not implemented in Phase 1:** photo/video media and uploads, the customer
-media gallery API, helpful votes, merchant replies, and review editing.
-There is no route to edit or delete a review as its author, and no route to
-manage media or votes — those are Phases 2–4. See [Roadmap](#roadmap).
+**`POST /store/reviews/uploads` needs only a valid publishable API key, not
+customer authentication** — the same as review submission itself when guest
+reviews are allowed. Until per-endpoint rate limiting ships (Phase 6), this
+is effectively an unauthenticated write to object storage, bounded only by
+the checks below (format, size, count). Put it behind your own rate limiting
+if that matters for your storefront before Phase 6 ships.
+
+**Not implemented yet:** the customer media gallery API, helpful votes,
+merchant replies, and review editing. There is no route to edit or delete a
+review as its author, and no route to manage votes — those are Phases 3–4.
+See [Roadmap](#roadmap).
+
+### Photo and video uploads
+
+- **Accepted formats: JPEG, PNG, WebP, AVIF, MP4, WebM.** The format is
+  determined by sniffing the file's own bytes (magic numbers/container
+  brands), never from the filename or the client-declared `Content-Type` —
+  a `.png` that is actually a shell script is rejected with a 400, not
+  stored.
+- **HEIC and MOV are rejected.** iPhones produce exactly these formats by
+  default (Live Photos save as HEIC, videos as MOV/QuickTime), so a shopper
+  uploading straight from their phone's camera roll without converting first
+  will hit this. Tell them to choose "Most Compatible" in the iPhone Camera
+  settings (Settings → Camera → Formats), which makes the phone save JPEG/
+  H.264-MP4 instead, or convert before uploading.
+- **Size and count limits are merchant-configurable and take effect without
+  a redeploy**, via `POST /admin/reviews/settings`: `max_media_per_review`
+  (default 5, 0–20), `max_image_size_mb` (default 5, 1–50), and
+  `max_video_size_mb` (default 50, 1–100). **A hard transport-layer ceiling
+  of 100MB per file and 20 files per request applies regardless of
+  settings** — multer enforces this before a single byte is buffered into
+  memory, and it sits above every settings-driven max so a merchant can
+  never configure a cap this ceiling would silently block.
+- **Images are re-encoded to strip EXIF metadata**, so GPS coordinates
+  embedded in phone photos are never published next to a review. Video is
+  stored as uploaded — stripping container metadata from video needs
+  ffmpeg, out of scope for Phase 2.
+- **Uploads never attached to a review are deleted automatically after 24
+  hours** by an hourly sweep job, so abandoned review forms don't leak
+  storage forever.
+- **`DELETE /admin/reviews/media/:id` is irreversible.** It removes the
+  stored file itself, not just the database row — a row-only delete would
+  leave the photo still publicly reachable at its storage URL, which
+  defeats the entire point of a moderator being able to remove offensive
+  content. There is no undo; there is also no soft-hide via this route (use
+  `hidden_at` for that, once Phase 4 ships curation tooling for it).
+- **No video transcoding and no server-generated poster frame in Phase 2.**
+  Video is stored exactly as uploaded, and `thumbnail_url` on `review_media`
+  is always `null`. Storefronts rendering a video gallery need to supply
+  their own poster image or fall back to the browser's native first-frame
+  behavior (e.g. a plain `<video>` tag with no `poster` attribute).
+
+### Known limitation: WebM detection can be fooled by a crafted Matroska file
+
+WebM and Matroska (`.mkv`) share the same EBML container magic bytes, so
+this plugin's byte-sniffer reads the EBML `DocType` element to tell them
+apart (Matroska is not an accepted upload; WebM is). A deliberately crafted
+Matroska file that plants a fake `DocType` element ahead of the real one can
+pass this check and be accepted and stored as `video/webm`. The consequence
+is a mislabelled video that may not play correctly — **not a security
+bypass**: the format allow-list still means only these specific binary media
+formats are ever stored, and the `Content-Type` served back is one this
+plugin chooses (from its own allow-list), not one an attacker controls.
+Closing this fully needs a real EBML parser, which was judged
+disproportionate for Phase 2; see `src/media/sniff-mime.ts` for the exact
+scan logic and its limits.
 
 ### Known limitation: multi-product bulk moderation
 
@@ -179,8 +251,8 @@ npm test
 | Phase | Scope |
 |---|---|
 | 0 | Repo bootstrap, CI, release pipeline ✅ |
-| 1 | Core module, settings, moderation, stats ✅ ← **you are here** |
-| 2 | Media (images + video), uploads, orphan sweep |
+| 1 | Core module, settings, moderation, stats ✅ |
+| 2 | Media (images + video), uploads, orphan sweep ✅ ← **you are here** |
 | 3 | Admin UI: queue, detail drawer, replies, settings page |
 | 4 | Helpful votes, gallery API, curation, review editing |
 | 5 | Storefront recipe, JSON-LD, docs |
