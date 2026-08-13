@@ -77,6 +77,59 @@ class ReviewModuleService extends MedusaService({
 
     return claimed.map((row) => row.id)
   }
+
+  /**
+   * The mirror image of claimMediaForReview(), and atomic for exactly the
+   * same reason. The orphan sweep used to SELECT its candidates and then
+   * delete them by primary key, which is the same read-then-write-by-PK
+   * race the claim above exists to avoid - only here the loser is a
+   * customer whose photo is destroyed after their review was accepted:
+   * `claimMediaForReview()` sets review_id in the window between the
+   * sweep's read and its delete, the delete never re-checks review_id, and
+   * both the row and the stored file go anyway with no error surfaced to
+   * anyone.
+   *
+   * `whereNull('review_id')` in the DELETE's own WHERE clause is what
+   * closes it: the database adjudicates, in one statement, and a row
+   * claimed a microsecond earlier simply does not match. The generated
+   * deleteReviewMedias() cannot express this - it deletes by id, and
+   * MedusaService's `{ selector }` forms still resolve to primary keys
+   * first (see claimMediaForReview above for the same limitation on the
+   * update side).
+   *
+   * Returns the rows it actually removed, file_id included: the caller
+   * deletes exactly those files and nothing else, so a row it did not win
+   * can never have its bytes deleted from under a live review.
+   */
+  @InjectManager()
+  async deleteUnattachedMedia(
+    mediaIds: string[],
+    @MedusaContext() context: Context<ReviewMediaManager> = {}
+  ): Promise<{ id: string; file_id: string }[]> {
+    if (!mediaIds.length) {
+      return []
+    }
+
+    const manager = context.manager
+
+    if (!manager) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        'deleteUnattachedMedia requires a manager from the review module context.'
+      )
+    }
+
+    const knex = manager.getTransactionContext() ?? manager.getKnex()
+
+    const deleted: { id: string; file_id: string }[] = await knex('review_media')
+      .whereIn('id', mediaIds)
+      .whereNull('review_id')
+      .whereNull('deleted_at')
+      .del()
+      .returning(['id', 'file_id'])
+
+    return deleted
+  }
 }
 
 export default ReviewModuleService
