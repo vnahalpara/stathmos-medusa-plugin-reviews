@@ -1,4 +1,9 @@
-import { authenticate, MiddlewareRoute, validateAndTransformBody } from '@medusajs/framework'
+import {
+  authenticate,
+  MiddlewareRoute,
+  validateAndTransformBody,
+  validateAndTransformQuery,
+} from '@medusajs/framework'
 import { z } from '@medusajs/framework/zod'
 
 export const CreateReviewSchema = z
@@ -13,6 +18,22 @@ export const CreateReviewSchema = z
   .strict()
 
 export type CreateReviewSchema = z.infer<typeof CreateReviewSchema>
+
+const toInt = (val: unknown) =>
+  typeof val === 'string' ? parseInt(val, 10) : val
+
+export const ListProductReviewsSchema = z
+  .object({
+    // An uncapped limit on a public endpoint is a free denial of service.
+    limit: z.preprocess(toInt, z.number().int().min(1).max(100).optional()),
+    offset: z.preprocess(toInt, z.number().int().min(0).optional()),
+    sort: z.enum(['newest', 'highest', 'lowest', 'most_helpful']).optional(),
+    rating: z.preprocess(toInt, z.number().int().min(1).max(5).optional()),
+    verified: z.preprocess((v) => v === 'true', z.boolean().optional()),
+  })
+  .strict()
+
+export type ListProductReviewsSchema = z.infer<typeof ListProductReviewsSchema>
 
 export const storeReviewMiddlewares: MiddlewareRoute[] = [
   {
@@ -29,5 +50,10 @@ export const storeReviewMiddlewares: MiddlewareRoute[] = [
       authenticate('customer', ['session', 'bearer'], { allowUnauthenticated: true }),
       validateAndTransformBody(CreateReviewSchema),
     ],
+  },
+  {
+    matcher: '/store/products/:id/reviews',
+    method: 'GET',
+    middlewares: [validateAndTransformQuery(ListProductReviewsSchema, {})],
   },
 ]
