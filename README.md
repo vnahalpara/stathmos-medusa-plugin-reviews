@@ -4,10 +4,13 @@ Product reviews for [Medusa v2](https://medusajs.com) with photo and video
 support, a customer media gallery API, merchant replies, helpful votes, and
 moderation settings a merchant can change from the admin without a redeploy.
 
-> **Status: pre-release (Phase 0).** The package is scaffolded and the build
-> and release pipeline work, but no review functionality has shipped yet. Do
-> not install this from npm expecting a working plugin. See
-> [Roadmap](#roadmap).
+> **Status: pre-release (Phase 1).** The core review module has shipped:
+> submitting, listing, moderating and summarizing reviews, plus DB-backed
+> settings editable from the admin without a redeploy. **Not yet
+> implemented: photo/video media, the customer gallery API, helpful votes,
+> merchant replies, and review editing.** Do not install this from npm
+> expecting those features. See [API](#api) for what works today and
+> [Roadmap](#roadmap) for what's next.
 
 ## Why another reviews plugin
 
@@ -87,6 +90,69 @@ public-hoist-pattern[]=@stathmos/*
 npm and yarn need no such workaround. This is a pnpm/Medusa interaction, not
 specific to this plugin — it affects any Medusa plugin that ships a module.
 
+### Upgrading from a pre-release build with the `review`/`product` link
+
+An early, unreleased commit on the Phase 1 branch briefly added a
+`review`/`product` module link, later withdrawn (see the CHANGELOG's
+Unreleased section) because it let Medusa's core `/store/products` routes
+leak raw review rows — guest emails and unmoderated content — to anyone
+with a publishable API key. If you never ran that commit's `db:migrate`
+against your database, there is nothing to do. If you did, your database
+has a leftover `review_review_product_product` table that this version no
+longer manages. Running `npx medusa db:migrate` again detects the removed
+link and interactively prompts you to select it for deletion:
+
+```
+? Select the tables to DELETE. The following links have been removed
+❯◯ review.review <> product.product (review_review_product_product)
+```
+
+Select it (space, then enter) to drop the table. This prompt needs an
+interactive terminal — running `db:migrate` unattended (CI, a scripted
+deploy) will leave the prompt waiting on stdin, so run it interactively at
+least once after upgrading. Leaving the table unconfirmed is inert (nothing
+in this plugin reads or writes it once the link definition is gone) but it
+is safe and recommended to clean it up.
+
+## API
+
+Nine endpoints ship in Phase 1:
+
+```
+POST   /store/reviews                       Submit a review (guest or customer, per settings)
+GET    /store/products/:id/reviews          List a product's approved reviews
+GET    /store/products/:id/reviews/stats    Denormalized rating summary + breakdown
+GET    /admin/reviews                       List/filter reviews (status, product_id, rating)
+POST   /admin/reviews/:id/approve           Approve one review
+POST   /admin/reviews/:id/reject            Reject one review, with a reason
+POST   /admin/reviews/batch/status          Bulk approve/reject/reset by id
+GET    /admin/reviews/settings              Read the current settings
+POST   /admin/reviews/settings              Update settings (partial, no redeploy)
+```
+
+All three `/store/*` routes 404 outright when the `enabled` setting is off.
+Verified-purchase status requires an authenticated customer — matching a
+guest's self-supplied email would make the badge forgeable.
+
+**Not implemented in Phase 1:** photo/video media and uploads, the customer
+media gallery API, helpful votes, merchant replies, and review editing.
+There is no route to edit or delete a review as its author, and no route to
+manage media or votes — those are Phases 2–4. See [Roadmap](#roadmap).
+
+### Known limitation: multi-product bulk moderation
+
+`POST /admin/reviews/batch/status` recomputes the public rating summary for
+only the **first** product among the reviews in the batch. Approving or
+rejecting several reviews that all belong to the same product (the normal
+admin-UI case, where bulk actions are scoped to one product's review list)
+is fully correct. A batch whose ids span multiple products in a single call
+will leave every product after the first with a stale summary — the
+storefront will show the old average/count until that product is next
+touched by another write (a new review, or its own moderation action). If
+you build tooling that batches ids across products, call the endpoint once
+per product instead of combining ids from different products in one
+request.
+
 ## Development
 
 This repo is developed against a local Medusa host application:
@@ -112,8 +178,8 @@ npm test
 
 | Phase | Scope |
 |---|---|
-| 0 | Repo bootstrap, CI, release pipeline ← **you are here** |
-| 1 | Core module, settings, moderation, stats |
+| 0 | Repo bootstrap, CI, release pipeline ✅ |
+| 1 | Core module, settings, moderation, stats ✅ ← **you are here** |
 | 2 | Media (images + video), uploads, orphan sweep |
 | 3 | Admin UI: queue, detail drawer, replies, settings page |
 | 4 | Helpful votes, gallery API, curation, review editing |
