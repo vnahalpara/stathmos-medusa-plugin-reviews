@@ -14,6 +14,25 @@ async function pngBase64(): Promise<string> {
   return buf.toString('base64')
 }
 
+// Noise, not a flat color: a flat-color PNG compresses to well under 100
+// bytes regardless of pixel dimensions, which makes it useless for proving
+// a size cap actually measures real bytes. max_image_size_mb is an integer
+// column (a fractional MB setting silently truncates to 0, which would
+// reject everything and make the test pass for the wrong reason), so this
+// needs to comfortably clear a whole-megabyte cap: 700x700 random noise
+// reliably encodes to well over 1MB.
+async function largeNoisyPngBuffer(): Promise<Buffer> {
+  const width = 700
+  const height = 700
+  const raw = Buffer.alloc(width * height * 3)
+
+  for (let i = 0; i < raw.length; i++) {
+    raw[i] = Math.floor(Math.random() * 256)
+  }
+
+  return sharp(raw, { raw: { width, height, channels: 3 } }).png().toBuffer()
+}
+
 /**
  * `expect(promise).rejects.toThrow()` is unreliable for workflow `.run()`
  * promises in this test runner - documented already in
@@ -81,9 +100,13 @@ medusaIntegrationTestRunner({
       it('rejects an image larger than max_image_size_mb', async () => {
         const container = getContainer()
 
+        // 1MB: comfortably below the ~1.4MB a 700x700 noise PNG actually
+        // encodes to, so this only passes if the real bytes are measured.
         await updateReviewSettingsWorkflow(container).run({
           input: { max_image_size_mb: 1 },
         })
+
+        const buf = await largeNoisyPngBuffer()
 
         await expectRejection(
           uploadReviewMediaWorkflow(container).run({
@@ -91,9 +114,33 @@ medusaIntegrationTestRunner({
               files: [
                 {
                   filename: 'huge.png',
-                  content: await pngBase64(),
-                  size_bytes: 5 * 1024 * 1024,
+                  content: buf.toString('base64'),
+                  size_bytes: buf.length,
                 },
+              ],
+            },
+          })
+        )
+      })
+
+      it('rejects a file whose real bytes exceed the limit even when size_bytes lies about being tiny', async () => {
+        const container = getContainer()
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { max_image_size_mb: 1 },
+        })
+
+        const buf = await largeNoisyPngBuffer()
+
+        // The attack: real payload is ~1.4MB, well over the 1MB cap, but
+        // the client claims size_bytes: 1. This is the case that proves
+        // the fix - the earlier version of this check trusted size_bytes
+        // and let this straight through.
+        await expectRejection(
+          uploadReviewMediaWorkflow(container).run({
+            input: {
+              files: [
+                { filename: 'lied-about-size.png', content: buf.toString('base64'), size_bytes: 1 },
               ],
             },
           })

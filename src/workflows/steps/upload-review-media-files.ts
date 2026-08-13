@@ -1,7 +1,6 @@
 import { createStep, StepResponse } from '@medusajs/framework/workflows-sdk'
 import { MedusaError } from '@medusajs/framework/utils'
 import { deleteFilesWorkflow, uploadFilesWorkflow } from '@medusajs/medusa/core-flows'
-import { REVIEW_MODULE } from '../../modules/review'
 import { getReviewSettings } from '../../settings/get-review-settings'
 import { mediaTypeFor, sniffMime } from '../../media/sniff-mime'
 import { stripExif } from '../../media/strip-exif'
@@ -10,13 +9,30 @@ type InputFile = { filename: string; content: string; size_bytes: number }
 
 type Input = { files: InputFile[] }
 
+export type PreparedFile = {
+  filename: string
+  mime: string
+  type: 'image' | 'video'
+  size_bytes: number
+}
+
 // Named so a shopper uploading a live-Photo/.heic photo or a .mov clip
 // straight off an iPhone - both of which this plugin rejects - gets told
 // what to send instead, rather than a dead-end "unsupported file type".
 const ACCEPTED_FORMATS = 'JPEG, PNG, WebP, AVIF, MP4, WebM'
 
-export const uploadReviewMediaStep = createStep(
-  'upload-review-media',
+/**
+ * Uploads and validates files only. Kept as its own step (rather than one
+ * step that also creates the review_media rows) so the saga engine can
+ * compensate correctly on a partial failure: if row creation fails after
+ * this step has already committed the upload, the engine only invokes
+ * compensation for steps that returned a StepResponse — a single combined
+ * step would let a row-creation failure leave an uploaded file with zero
+ * rows ever having existed to reference it, which even the Task 9 orphan
+ * sweep cannot find (it only looks at unattached rows).
+ */
+export const uploadReviewMediaFilesStep = createStep(
+  'upload-review-media-files',
   async (input: Input, { container }) => {
     const settings = await getReviewSettings(container)
 
@@ -60,7 +76,15 @@ export const uploadReviewMediaStep = createStep(
         const limitMb =
           type === 'image' ? settings.max_image_size_mb : settings.max_video_size_mb
 
-        if (file.size_bytes > limitMb * 1024 * 1024) {
+        // Gated on the decoded buffer's own length, never on
+        // file.size_bytes: that field comes straight from the request body
+        // and is entirely client-controlled. A caller can declare
+        // size_bytes: 1 while sending an arbitrarily large payload, so only
+        // the actual byte count of the decoded content can be trusted for
+        // this check. size_bytes stays on the input type because later
+        // tasks' briefs reference this input shape, but it must never
+        // again be used to make a decision.
+        if (raw.length > limitMb * 1024 * 1024) {
           throw new MedusaError(
             MedusaError.Types.INVALID_DATA,
             `${file.filename} exceeds the ${limitMb}MB limit`
@@ -84,25 +108,16 @@ export const uploadReviewMediaStep = createStep(
       },
     })
 
-    const service = container.resolve(REVIEW_MODULE)
-
-    const media = await service.createReviewMedias(
-      files.map((file, i) => ({
-        review_id: null,
-        type: prepared[i].type,
-        file_id: file.id,
-        url: file.url,
-        mime_type: prepared[i].mime,
-        size_bytes: prepared[i].size_bytes,
-        sort_order: i,
-      }))
-    )
-
-    const rows = Array.isArray(media) ? media : [media]
+    const preparedMeta: PreparedFile[] = prepared.map((f) => ({
+      filename: f.filename,
+      mime: f.mime,
+      type: f.type,
+      size_bytes: f.size_bytes,
+    }))
 
     return new StepResponse(
-      { media: rows },
-      { mediaIds: rows.map((m) => m.id), fileIds: files.map((f) => f.id) }
+      { files, prepared: preparedMeta },
+      { fileIds: files.map((f) => f.id) }
     )
   },
   async (compensation, { container }) => {
@@ -110,15 +125,6 @@ export const uploadReviewMediaStep = createStep(
       return
     }
 
-    const service = container.resolve(REVIEW_MODULE)
-    await service.deleteReviewMedias(compensation.mediaIds)
-
-    // The rows are gone, but without this the uploaded bytes stay in object
-    // storage with nothing pointing at them: the Task 9 orphan sweep only
-    // ever looks at unattached *rows*, so a row-less file can never be
-    // reclaimed and leaks forever. Deleting through deleteFilesWorkflow (not
-    // a raw file-service call) keeps this consistent with how every other
-    // file deletion in the app happens.
     await deleteFilesWorkflow(container).run({
       input: { ids: compensation.fileIds },
     })

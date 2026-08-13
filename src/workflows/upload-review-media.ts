@@ -1,5 +1,6 @@
 import { createWorkflow, WorkflowResponse } from '@medusajs/framework/workflows-sdk'
-import { uploadReviewMediaStep } from './steps/upload-review-media'
+import { uploadReviewMediaFilesStep } from './steps/upload-review-media-files'
+import { createReviewMediaRowsStep } from './steps/create-review-media-rows'
 
 export type UploadReviewMediaInput = {
   files: { filename: string; content: string; size_bytes: number }[]
@@ -8,7 +9,8 @@ export type UploadReviewMediaInput = {
 export const uploadReviewMediaWorkflow = createWorkflow(
   'upload-review-media',
   function (input: UploadReviewMediaInput) {
-    const result = uploadReviewMediaStep(input)
+    const uploaded = uploadReviewMediaFilesStep(input)
+    const result = createReviewMediaRowsStep(uploaded)
 
     return new WorkflowResponse(result)
   }
