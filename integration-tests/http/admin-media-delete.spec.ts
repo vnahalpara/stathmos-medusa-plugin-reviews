@@ -6,8 +6,17 @@ import { uploadReviewMediaWorkflow } from '../../src/workflows/upload-review-med
 import { createReviewWorkflow } from '../../src/workflows/create-review'
 import { moderateReviewsWorkflow } from '../../src/workflows/moderate-reviews'
 import { updateReviewSettingsWorkflow } from '../../src/workflows/update-review-settings'
+import { deleteReviewMediaWorkflow } from '../../src/workflows/delete-review-media'
 import { createAdminUser, adminHeaders } from '../helpers/admin'
 import { getPublishableKeyHeaders } from '../helpers/store'
+
+async function pngBase64(background: string): Promise<string> {
+  const buf = await sharp({ create: { width: 4, height: 4, channels: 3, background } })
+    .png()
+    .toBuffer()
+
+  return buf.toString('base64')
+}
 
 medusaIntegrationTestRunner({
   inApp: true,
@@ -98,6 +107,63 @@ medusaIntegrationTestRunner({
       // this feature exists to avoid.
       const fileService = container.resolve(Modules.FILE)
       await expect(fileService.getAsBuffer(deletedFileId)).rejects.toThrow()
+    })
+
+    it('leaves the file deleted when the row delete fails afterward (the acceptable failure mode)', async () => {
+      // Proves the file-before-row order: if the row delete step fails
+      // *after* the file is already gone, the file must stay gone (content
+      // genuinely removed) even though the row is left dangling. The
+      // alternative order would leave the file recoverable here, which is
+      // the exact outcome this ordering exists to avoid.
+      const container = getContainer()
+      const service = container.resolve(REVIEW_MODULE)
+
+      const { result: uploaded } = await uploadReviewMediaWorkflow(container).run({
+        input: { files: [{ filename: 'c.png', content: await pngBase64('#222222'), size_bytes: 100 }] },
+      })
+
+      const { result: review } = await createReviewWorkflow(container).run({
+        input: {
+          product_id: 'prod_admin_media_partial_fail',
+          rating: 5,
+          content: 'x'.repeat(20),
+          display_name: 'Ada',
+          media_ids: uploaded.media.map((m) => m.id),
+        },
+      })
+
+      const fileId = uploaded.media[0].file_id
+      const mediaId = uploaded.media[0].id
+
+      jest
+        .spyOn(service, 'deleteReviewMedias')
+        .mockRejectedValueOnce(new Error('forced row-delete failure'))
+
+      let threw = false
+      try {
+        await deleteReviewMediaWorkflow(container).run({ input: { id: mediaId } })
+      } catch (error) {
+        threw = true
+        expect((error as Error).message).toContain('forced row-delete failure')
+      }
+      expect(threw).toBe(true)
+
+      jest.restoreAllMocks()
+
+      // Load-bearing: the file must already be gone, since it was deleted
+      // before the row-delete call that failed.
+      const fileService = container.resolve(Modules.FILE)
+      await expect(fileService.getAsBuffer(fileId)).rejects.toThrow()
+
+      // The row, by contrast, is the acceptable leftover: still present,
+      // now pointing at a missing file - a broken image someone can notice
+      // and clean up, rather than an invisible orphan file.
+      const [danglingRow] = await service.listReviewMedias({ id: mediaId })
+      expect(danglingRow).toBeDefined()
+
+      // The review itself is untouched by this failed cleanup attempt.
+      const [stillThere] = await service.listReviews({ id: review.id })
+      expect(stillThere.status).toEqual('pending')
     })
 
     it('404s an unknown media id', async () => {
