@@ -113,6 +113,47 @@ medusaIntegrationTestRunner({
         )
       })
 
+      // max_media_per_review must bound the media a review ends up with in
+      // total, not just the file count of one upload call - a client that
+      // spreads uploads across several separate requests (each
+      // individually under the cap, so upload-review-media-files.ts's own
+      // per-call check never fires) must still be refused at attach time
+      // once the combined total exceeds the setting. Four separate
+      // uploadReviewMediaWorkflow runs, one file each, prove this is
+      // enforced across calls, not just within a single one.
+      it('refuses more media than max_media_per_review even when assembled across multiple upload requests', async () => {
+        const container = getContainer()
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { max_media_per_review: 3 },
+        })
+
+        const mediaIds = [
+          await uploadOne(container),
+          await uploadOne(container),
+          await uploadOne(container),
+          await uploadOne(container),
+        ]
+
+        await expectRejection(
+          createReviewWorkflow(container).run({
+            input: {
+              product_id: 'prod_over_cap',
+              rating: 5,
+              content: 'x'.repeat(20),
+              display_name: 'Overcap',
+              media_ids: mediaIds,
+            },
+          })
+        )
+
+        // Load-bearing: the rejection must not have left any of the batch
+        // claimed - not a partial attach, not all four.
+        const service = container.resolve(REVIEW_MODULE)
+        const rows = await service.listReviewMedias({ id: mediaIds })
+        expect(rows.every((row) => row.review_id === null)).toBe(true)
+      })
+
       // Regression test for the Phase 1 bug this task was warned not to
       // reintroduce: an unknown-id check written as a length comparison
       // (`rows.length !== media_ids.length`) under-counts a batch that

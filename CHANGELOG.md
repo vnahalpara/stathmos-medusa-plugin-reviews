@@ -21,12 +21,15 @@ the admin without a redeploy, underneath a hard transport-layer ceiling
 (100MB per file, 20 files per request) that no setting can exceed. Media
 uploaded but never attached to a review is deleted automatically by an
 hourly sweep job after 24 hours. Approved reviews' media is returned on the
-store review-list and review-submission responses and counted in
-`/store/products/:id/reviews/stats`'s `media_count`; media of pending or
-rejected reviews, and any item a moderator hides via `hidden_at`, is never
-returned by a store endpoint. `DELETE /admin/reviews/media/:id` lets a
-moderator remove a single offensive item — this deletes the stored file
-itself, not just the database row, and is irreversible.
+store review-list response and counted in
+`/store/products/:id/reviews/stats`'s `media_count`. The review-submission
+response (`POST /store/reviews`) returns the newly submitted review's own
+media immediately, regardless of its moderation status, since that's the
+submitter's own content; media of *other* pending or rejected reviews, and
+any item a moderator hides via `hidden_at`, is never returned to anyone
+else. `DELETE /admin/reviews/media/:id` lets a moderator remove a single
+offensive item — this deletes the stored file itself, not just the
+database row, and is irreversible.
 
 **Known limitation:** no video transcoding and no server-generated poster
 frame — video is stored exactly as uploaded, and `thumbnail_url` is always

@@ -1,6 +1,7 @@
 import { createStep, StepResponse } from '@medusajs/framework/workflows-sdk'
 import { MedusaError } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../modules/review'
+import { getReviewSettings } from '../../settings/get-review-settings'
 
 type Input = { review_id: string; media_ids: string[] }
 
@@ -45,6 +46,26 @@ export const attachReviewMediaStep = createStep(
     // is exact.
     if (rows.length !== uniqueIds.length) {
       throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Unknown media')
+    }
+
+    // max_media_per_review is a per-review cap, not a per-upload-call cap -
+    // the upload step's own count check (upload-review-media-files.ts) only
+    // ever sees one request's file list and cannot know what a review
+    // already has attached, so it is a cheap early reject, not the
+    // enforcement point for the setting's actual name/contract. This is
+    // that enforcement point: it accounts for whatever is already attached
+    // to this review plus what this call is about to add, and it runs
+    // before the atomic claim below so a rejection here can never leave
+    // any of uniqueIds claimed - nothing has touched the database for this
+    // batch yet at this point in the step, so there is nothing to release.
+    const settings = await getReviewSettings(container)
+    const alreadyAttached = await service.listReviewMedias({ review_id: input.review_id })
+
+    if (alreadyAttached.length + uniqueIds.length > settings.max_media_per_review) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        `A review may have at most ${settings.max_media_per_review} media item(s)`
+      )
     }
 
     // The read above cannot be trusted as the basis for the claim: it is a

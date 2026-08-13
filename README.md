@@ -138,9 +138,13 @@ The three review-facing `/store/*` routes above (`POST /store/reviews`,
 `GET /store/products/:id/reviews`, `GET /store/products/:id/reviews/stats`)
 404 outright when the `enabled` setting is off. `POST /store/reviews/uploads`
 is gated the same way but responds **400**, not 404, when reviews or media
-uploads are disabled (`enabled` or `allow_media` off) — the same `NOT_ALLOWED`
-path used for the video/format/size checks below, rather than the `NOT_FOUND`
-the other three routes use. Verified-purchase status requires an
+uploads are disabled. Both routes respond 400 for their respective checks,
+but not through the same error type: "reviews disabled" and "video uploads
+disabled" respond with `NOT_ALLOWED`, while unsupported format, too many
+files, and an oversized file all respond with `INVALID_DATA`. The HTTP
+status code is 400 either way, but a caller inspecting the JSON response
+body's `type` field will see `not_allowed` for the first two and
+`invalid_data` for the rest. Verified-purchase status requires an
 authenticated customer — matching a guest's self-supplied email would make
 the badge forgeable.
 
@@ -172,11 +176,22 @@ See [Roadmap](#roadmap).
 - **Size and count limits are merchant-configurable and take effect without
   a redeploy**, via `POST /admin/reviews/settings`: `max_media_per_review`
   (default 5, 0–20), `max_image_size_mb` (default 5, 1–50), and
-  `max_video_size_mb` (default 50, 1–100). **A hard transport-layer ceiling
-  of 100MB per file and 20 files per request applies regardless of
-  settings** — multer enforces this before a single byte is buffered into
-  memory, and it sits above every settings-driven max so a merchant can
-  never configure a cap this ceiling would silently block.
+  `max_video_size_mb` (default 50, 1–100). `max_media_per_review` bounds the
+  total media a review ends up with, enforced when media is attached to the
+  review at `POST /store/reviews` time (already-attached count plus the
+  incoming ids) — not merely the file count of one call to
+  `POST /store/reviews/uploads`, so splitting an upload across several
+  requests cannot get more media onto a review than the setting allows.
+  The upload endpoint has its own per-request count check too, ahead of
+  this one, purely so an over-large single call is rejected before its
+  bytes are processed rather than after. **A hard transport-layer ceiling of
+  100MB per file and 20 files per request applies regardless of settings**
+  — multer's `limits.fileSize`/`limits.files` abort the upload once a
+  file's streamed byte count or the request's file count exceeds that
+  ceiling, before the request ever reaches this plugin's own format/size/
+  count checks or the File Module — and it sits above every settings-driven
+  max so a merchant can never configure a cap this ceiling would silently
+  block.
 - **Images are re-encoded to strip EXIF metadata**, so GPS coordinates
   embedded in phone photos are never published next to a review. Video is
   stored as uploaded — stripping container metadata from video needs
