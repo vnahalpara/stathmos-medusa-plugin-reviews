@@ -159,6 +159,74 @@ medusaIntegrationTestRunner({
         expect(response.data.message.toLowerCase()).toContain('files')
       })
 
+      // multer's defaults leave `fields` and `parts` at Infinity and cap
+      // only `fieldSize`, so an unauthenticated caller could push an
+      // unbounded number of non-file form fields straight into req.body -
+      // 300 x 100KB was accepted in 72ms. This endpoint reads no text
+      // fields at all, so the limit is zero of them.
+      it('rejects non-file form fields outright', async () => {
+        const form = new FormData()
+        form.append('files', new Blob([await png()] as BlobPart[], { type: 'image/png' }), 'photo.png')
+        for (let i = 0; i < 300; i++) {
+          form.append(`junk${i}`, 'x'.repeat(100 * 1024))
+        }
+
+        const response = await api
+          .post('/store/reviews/uploads', form, { headers: storeHeaders })
+          .catch((e) => e.response)
+
+        expect(response.status).toEqual(400)
+        expect(response.data.message.toLowerCase()).toContain('file parts only')
+      })
+
+      // A sharp/libvips rejection is a plain Error with no statusCode and
+      // no MedusaError `.type`, so it used to fall through the framework's
+      // error-handler switch to `500 {"code":"unknown_error"}`. A malformed
+      // photo is one of the most likely things a shopper does here; it must
+      // read as a client error, not a server fault - the same reasoning
+      // that already produced toClientUploadError for MulterError.
+      it('reports an undecodable image as an actionable 400, not an opaque 500', async () => {
+        const corrupt = Buffer.concat([
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+          Buffer.from('this is not actually a png'.repeat(8)),
+        ])
+
+        const form = new FormData()
+        form.append('files', new Blob([corrupt] as BlobPart[], { type: 'image/png' }), 'broken.png')
+
+        const response = await api
+          .post('/store/reviews/uploads', form, { headers: storeHeaders })
+          .catch((e) => e.response)
+
+        expect(response.status).toEqual(400)
+        expect(response.data.type).toEqual('invalid_data')
+        expect(response.data.message).toContain('broken.png')
+      })
+
+      // 789 bytes of request body declaring 6000x6000. Without a pixel
+      // budget this is ~500ms of server CPU per file, from an endpoint that
+      // needs only a publishable key - and it succeeded.
+      it('rejects a decompression bomb with a 400 rather than decoding it', async () => {
+        const bomb = await sharp({
+          create: { width: 6000, height: 6000, channels: 3, background: '#123456' },
+        })
+          .avif({ quality: 1, effort: 0 })
+          .toBuffer()
+
+        expect(bomb.length).toBeLessThan(10 * 1024)
+
+        const form = new FormData()
+        form.append('files', new Blob([bomb] as BlobPart[], { type: 'image/avif' }), 'bomb.avif')
+
+        const response = await api
+          .post('/store/reviews/uploads', form, { headers: storeHeaders })
+          .catch((e) => e.response)
+
+        expect(response.status).toEqual(400)
+        expect(response.data.type).toEqual('invalid_data')
+        expect(response.data.message).toMatch(/6000x6000/)
+      })
+
       // Proves the conversion in uploadReviewMediaFiles is narrowly scoped:
       // ONLY a multer.MulterError is converted to a 4xx. A genuine parse
       // failure that is NOT a MulterError - Busboy's own constructor

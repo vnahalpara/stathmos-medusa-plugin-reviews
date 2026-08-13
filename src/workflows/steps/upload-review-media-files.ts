@@ -4,7 +4,7 @@ import { MedusaError } from '@medusajs/framework/utils'
 import { deleteFilesWorkflow, uploadFilesWorkflow } from '@medusajs/medusa/core-flows'
 import { getReviewSettings } from '../../settings/get-review-settings'
 import { mediaTypeFor, sniffMime } from '../../media/sniff-mime'
-import { stripExif } from '../../media/strip-exif'
+import { MediaDecodeError, stripExif } from '../../media/strip-exif'
 
 type InputFile = { filename: string; content: string; size_bytes: number }
 
@@ -86,6 +86,32 @@ function storageFilename(mime: string): string {
 }
 
 /**
+ * A sharp/libvips failure - an over-budget image, a corrupt-but-correctly-
+ * magicked file, libheif's own internal limits - is a plain Error, which
+ * has neither an http-errors statusCode nor a MedusaError `.type`, so left
+ * alone it falls through the framework's error-handler switch to an opaque
+ * 500 "unknown error occurred". A malformed image is one of the most
+ * likely things a shopper does on this endpoint; reporting it as a server
+ * fault reads as "the site is broken" and pollutes error monitoring with
+ * false alerts.
+ *
+ * This is the same fix, with the same reasoning, as `toClientUploadError`
+ * in src/api/store/reviews/middlewares.ts, and it is deliberately built the
+ * same way: ONLY a MediaDecodeError may be converted (enforced by the
+ * parameter type - the call site must narrow with `instanceof` first).
+ * MediaDecodeError is raised by strip-exif.ts around the sharp calls and
+ * nowhere else, so the conversion cannot reach any other failure. Do not
+ * widen this function or its call site to accept `unknown`/`Error`: that
+ * would launder a genuine server fault into a false 400.
+ */
+function toClientMediaError(filename: string, error: MediaDecodeError): MedusaError {
+  return new MedusaError(
+    MedusaError.Types.INVALID_DATA,
+    `${filename} could not be processed as an image: ${error.message} Accepted formats: ${ACCEPTED_FORMATS}`
+  )
+}
+
+/**
  * Uploads and validates files only. Kept as its own step (rather than one
  * step that also creates the review_media rows) so the saga engine can
  * compensate correctly on a partial failure: if row creation fails after
@@ -114,31 +140,45 @@ export const uploadReviewMediaFilesStep = createStep(
       )
     }
 
-    const prepared = await Promise.all(
-      input.files.map(async (file) => {
-        const raw = Buffer.from(file.content, 'base64')
+    // Sequential, not Promise.all. Every file in the batch is an
+    // independent decode, so running the whole batch concurrently lets one
+    // unauthenticated request occupy up to max_media_per_review cores at
+    // once - the measured case was five images costing 2.4s of wall-clock
+    // server CPU from 4KB of request body. Serial keeps a single request to
+    // a single core's worth of work; the pixel budget in stripExif bounds
+    // how much work that is.
+    const prepared: {
+      storage_filename: string
+      mime: string
+      type: 'image' | 'video'
+      content: Buffer
+      size_bytes: number
+    }[] = []
 
-        // Sniffed from the bytes — the filename and any client-declared
-        // content type are untrusted.
-        const mime = sniffMime(raw)
-        const type = mime ? mediaTypeFor(mime) : null
+    for (const file of input.files) {
+      const raw = Buffer.from(file.content, 'base64')
 
-        if (!mime || !type) {
-          throw new MedusaError(
-            MedusaError.Types.INVALID_DATA,
-            `Unsupported file type for ${file.filename}. Accepted formats: ${ACCEPTED_FORMATS}`
-          )
-        }
+      // Sniffed from the bytes — the filename and any client-declared
+      // content type are untrusted.
+      const mime = sniffMime(raw)
+      const type = mime ? mediaTypeFor(mime) : null
 
-        if (type === 'video' && !settings.allow_video) {
-          throw new MedusaError(
-            MedusaError.Types.NOT_ALLOWED,
-            'Video uploads are disabled'
-          )
-        }
+      if (!mime || !type) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          `Unsupported file type for ${file.filename}. Accepted formats: ${ACCEPTED_FORMATS}`
+        )
+      }
 
-        const limitMb =
-          type === 'image' ? settings.max_image_size_mb : settings.max_video_size_mb
+      if (type === 'video' && !settings.allow_video) {
+        throw new MedusaError(
+          MedusaError.Types.NOT_ALLOWED,
+          'Video uploads are disabled'
+        )
+      }
+
+      const limitMb =
+        type === 'image' ? settings.max_image_size_mb : settings.max_video_size_mb
 
         // Gated on the decoded buffer's own length, never on
         // file.size_bytes: that field comes straight from the request body
@@ -148,24 +188,36 @@ export const uploadReviewMediaFilesStep = createStep(
         // this check. size_bytes stays on the input type because later
         // tasks' briefs reference this input shape, but it must never
         // again be used to make a decision.
-        if (raw.length > limitMb * 1024 * 1024) {
-          throw new MedusaError(
-            MedusaError.Types.INVALID_DATA,
-            `${file.filename} exceeds the ${limitMb}MB limit`
-          )
-        }
+      if (raw.length > limitMb * 1024 * 1024) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          `${file.filename} exceeds the ${limitMb}MB limit`
+        )
+      }
 
-        const content = await stripExif(raw, mime)
+      let content: Buffer
 
-        return {
-          storage_filename: storageFilename(mime),
-          mime,
-          type,
-          content,
-          size_bytes: content.length,
-        }
+      try {
+        content = await stripExif(raw, mime)
+      } catch (error) {
+        // The instanceof check is the enforcement point for
+        // toClientMediaError's contract: only a MediaDecodeError (raised
+        // by strip-exif.ts around the sharp calls, and nowhere else) is
+        // converted. Anything else is a real server fault and MUST keep
+        // propagating untouched as a 500.
+        throw error instanceof MediaDecodeError
+          ? toClientMediaError(file.filename, error)
+          : error
+      }
+
+      prepared.push({
+        storage_filename: storageFilename(mime),
+        mime,
+        type,
+        content,
+        size_bytes: content.length,
       })
-    )
+    }
 
     const { result: files } = await uploadFilesWorkflow(container).run({
       input: {
