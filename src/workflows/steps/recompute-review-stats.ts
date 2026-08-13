@@ -48,6 +48,16 @@ export async function recomputeReviewStats(
   const count = approved.length
   const average = count === 0 ? 0 : Math.round((total / count) * 100) / 100
 
+  const approvedIds = approved.map((review) => review.id)
+
+  // Same rule as the store routes: media is only ever counted for reviews
+  // already filtered to approved, in one query keyed by the whole id set,
+  // and hidden media is excluded - visibility stays derived from the
+  // parent review, never a separately stored fact that could drift.
+  const media = approvedIds.length
+    ? await service.listReviewMedias({ review_id: approvedIds, hidden_at: null })
+    : []
+
   const values = {
     product_id: productId,
     count,
@@ -57,8 +67,7 @@ export async function recomputeReviewStats(
     breakdown_3: breakdown[3],
     breakdown_4: breakdown[4],
     breakdown_5: breakdown[5],
-    // Media lands in Phase 2; the column exists so the summary shape is stable.
-    media_count: 0,
+    media_count: media.length,
   }
 
   const [existing] = await service.listReviewStats({ product_id: productId })

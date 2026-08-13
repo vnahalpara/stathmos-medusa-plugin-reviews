@@ -46,6 +46,26 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     order: ORDER_BY[sort ?? 'newest'],
   })
 
+  // Media is fetched only for reviews already filtered to `approved` above,
+  // in a single query keyed by the whole id set - not one query per review.
+  // That keeps visibility derived from the parent review (there is no
+  // status column on review_media to drift out of sync) and keeps this
+  // route from issuing an N+1 query against a review list.
+  const media = reviews.length
+    ? await service.listReviewMedias({
+        review_id: reviews.map((r) => r.id),
+        hidden_at: null,
+      })
+    : []
+
+  const mediaByReview = new Map<string, typeof media>()
+
+  for (const item of media) {
+    const list = mediaByReview.get(item.review_id!) ?? []
+    list.push(item)
+    mediaByReview.set(item.review_id!, list)
+  }
+
   res.json({
     // Field-by-field response, not the model: email and customer_id must
     // never reach a store response, and an explicit allow-list cannot leak
@@ -61,6 +81,14 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       is_verified_purchase: review.is_verified_purchase,
       helpful_count: review.helpful_count,
       created_at: review.created_at,
+      media: (mediaByReview.get(review.id) ?? [])
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map((m) => ({
+          id: m.id,
+          type: m.type,
+          url: m.url,
+          thumbnail_url: m.thumbnail_url,
+        })),
     })),
     count,
     limit: limit ?? 20,

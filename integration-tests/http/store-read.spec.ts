@@ -80,6 +80,7 @@ medusaIntegrationTestRunner({
             'helpful_count',
             'id',
             'is_verified_purchase',
+            'media',
             'product_id',
             'rating',
             'status',

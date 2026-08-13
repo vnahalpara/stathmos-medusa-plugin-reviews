@@ -1,4 +1,5 @@
 import { AuthenticatedMedusaRequest, MedusaResponse } from '@medusajs/framework/http'
+import { REVIEW_MODULE } from '../../../modules/review'
 import { createReviewWorkflow } from '../../../workflows/create-review'
 import { CreateReviewSchema } from './middlewares'
 
@@ -10,6 +11,19 @@ export async function POST(
 
   const { result } = await createReviewWorkflow(req.scope).run({
     input: { ...req.validatedBody, customer_id: customerId },
+  })
+
+  const service = req.scope.resolve(REVIEW_MODULE)
+
+  // Fetched the same way as the list route: keyed by this one review's id,
+  // filtered to non-hidden. A freshly submitted review is not yet approved
+  // (unless auto-approval is on), but its own media is still the
+  // submitter's own content to see back immediately - visibility to OTHER
+  // shoppers is still gated entirely by the list route's approved-only
+  // filter, which this response never bypasses.
+  const media = await service.listReviewMedias({
+    review_id: result.id,
+    hidden_at: null,
   })
 
   // Field-by-field response, not the model: a guest's email must never
@@ -27,6 +41,14 @@ export async function POST(
       is_verified_purchase: result.is_verified_purchase,
       helpful_count: result.helpful_count,
       created_at: result.created_at,
+      media: media
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map((m) => ({
+          id: m.id,
+          type: m.type,
+          url: m.url,
+          thumbnail_url: m.thumbnail_url,
+        })),
     },
   })
 }
