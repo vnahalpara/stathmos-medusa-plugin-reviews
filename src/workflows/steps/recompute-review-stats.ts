@@ -26,37 +26,71 @@ function isDuplicateProductStatsError(error: unknown): boolean {
   )
 }
 
+/**
+ * How many approved reviews are materialised at a time. Medusa applies no
+ * implicit default here - `buildQuery` leaves `limit: undefined` when
+ * `config.take` is absent - so without this the recompute loads every
+ * approved review for a product into memory and then issues an `IN` list of
+ * every one of their ids against review_media. That runs on every review
+ * submission, every moderation action and every media delete, so its cost
+ * grows without bound on exactly the products that are doing well.
+ */
+export const STATS_PAGE_SIZE = 500
+
+/**
+ * Ceiling on pages per recompute, so a single write cannot walk an
+ * unbounded table. 500 x 200 = 100,000 approved reviews for one product.
+ */
+const STATS_MAX_PAGES = 200
+
 export async function recomputeReviewStats(
   container: MedusaContainer,
-  productId: string
+  productId: string,
+  pageSize: number = STATS_PAGE_SIZE
 ) {
   const service = container.resolve(REVIEW_MODULE)
 
-  const approved = await service.listReviews({
-    product_id: productId,
-    status: 'approved',
-  })
-
   const breakdown = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } as Record<number, number>
   let total = 0
+  let count = 0
+  let mediaCount = 0
 
-  for (const review of approved) {
-    breakdown[review.rating] = (breakdown[review.rating] ?? 0) + 1
-    total += review.rating
+  for (let page = 0; page < STATS_MAX_PAGES; page++) {
+    const approved = await service.listReviews(
+      { product_id: productId, status: 'approved' },
+      { take: pageSize, skip: page * pageSize, order: { id: 'ASC' } }
+    )
+
+    if (!approved.length) {
+      break
+    }
+
+    for (const review of approved) {
+      breakdown[review.rating] = (breakdown[review.rating] ?? 0) + 1
+      total += review.rating
+    }
+
+    count += approved.length
+
+    // Same rule as the store routes: media is only ever counted for
+    // reviews already filtered to approved, and hidden media is excluded -
+    // visibility stays derived from the parent review, never a separately
+    // stored fact that could drift. Counted with listAndCount so the rows
+    // are never materialised, and keyed by one page of ids at a time so
+    // the `IN` list stays bounded too.
+    const [, pageMediaCount] = await service.listAndCountReviewMedias(
+      { review_id: approved.map((review) => review.id), hidden_at: null },
+      { take: 1, select: ['id'] }
+    )
+
+    mediaCount += pageMediaCount
+
+    if (approved.length < pageSize) {
+      break
+    }
   }
 
-  const count = approved.length
   const average = count === 0 ? 0 : Math.round((total / count) * 100) / 100
-
-  const approvedIds = approved.map((review) => review.id)
-
-  // Same rule as the store routes: media is only ever counted for reviews
-  // already filtered to approved, in one query keyed by the whole id set,
-  // and hidden media is excluded - visibility stays derived from the
-  // parent review, never a separately stored fact that could drift.
-  const media = approvedIds.length
-    ? await service.listReviewMedias({ review_id: approvedIds, hidden_at: null })
-    : []
 
   const values = {
     product_id: productId,
@@ -67,7 +101,7 @@ export async function recomputeReviewStats(
     breakdown_3: breakdown[3],
     breakdown_4: breakdown[4],
     breakdown_5: breakdown[5],
-    media_count: media.length,
+    media_count: mediaCount,
   }
 
   const [existing] = await service.listReviewStats({ product_id: productId })

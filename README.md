@@ -238,6 +238,25 @@ See [Roadmap](#roadmap).
 - **Uploads never attached to a review are deleted automatically after 24
   hours** by an hourly sweep job, so abandoned review forms don't leak
   storage forever.
+- **Rejecting a review does NOT remove its media from storage.** Read that
+  literally. `POST /admin/reviews/:id/reject` and
+  `POST /admin/reviews/batch/status` change the review's status and nothing
+  else. Every photo and video attached to a rejected review is still in
+  your file storage and is still served, publicly, at the same URL it had
+  before — the store API stops returning it, and it disappears from the
+  storefront, but the bytes are one URL away for anyone who has that URL.
+  Rejecting for "offensive photo" therefore removes the photo from your
+  product page and **not** from the internet.
+  **`DELETE /admin/reviews/media/:id` is the only thing that removes stored
+  media**, and you must call it explicitly, per media item, in addition to
+  rejecting. If you build moderation tooling on these endpoints, wire that
+  delete into your reject flow yourself.
+  This is deliberate. Deletion is irreversible and rejection is frequently
+  for fixable reasons (wrong product, thin content, a policy detail the
+  shopper can correct), so the plugin does not destroy customer content as
+  a side effect of a reversible moderation action. Server-generated,
+  non-enumerable storage keys mean a rejected review's media is not
+  discoverable by guessing; it is not, and is not claimed to be, deleted.
 - **`DELETE /admin/reviews/media/:id` is irreversible.** It removes the
   stored file itself, not just the database row — a row-only delete would
   leave the photo still publicly reachable at its storage URL, which

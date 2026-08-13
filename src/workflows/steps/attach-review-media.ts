@@ -22,6 +22,20 @@ type Input = { review_id: string; media_ids: string[] }
  * ids back), but a future feature that deletes or reassigns a review must
  * explicitly null out review_id on its media first, or those rows strand
  * permanently attached to a review that no longer exists / no longer wants them.
+ *
+ * The rows are not the interesting part of that, though - the BYTES are.
+ * The file was uploaded with access: 'public' and stays served at its URL
+ * after a rejection, so a moderator who rejects a review for an offensive
+ * photo has removed it from the storefront and not from storage. That is a
+ * deliberate decision, not an oversight: deletion is irreversible and
+ * rejection is frequently for fixable reasons, so a reversible moderation
+ * action does not destroy customer content. What makes it defensible is
+ * that the key is no longer guessable - see storageFilename() in
+ * upload-review-media-files.ts, which replaced a `${Date.now()}-${originalname}`
+ * key that a common camera filename plus a millisecond brute force over a
+ * known submission window really could enumerate. deleteReviewMediaWorkflow
+ * (DELETE /admin/reviews/media/:id) is the removal path, and the README's
+ * media section states plainly that rejection is not one.
  */
 export const attachReviewMediaStep = createStep(
   'attach-review-media',

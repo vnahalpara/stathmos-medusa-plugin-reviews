@@ -34,6 +34,34 @@ async function largeNoisyPngBuffer(): Promise<Buffer> {
 }
 
 /**
+ * A real WebM header: the EBML magic plus a genuine DocType element
+ * (ID 0x42 0x82, single-byte size form) whose value is "webm", which is
+ * what sniffMime actually reads.
+ *
+ * This matters more than it looks. The fixture this file used to carry was
+ * the magic bytes plus 64 zeroes - no DocType element at all - so sniffMime
+ * returned null and the workflow rejected it as "Unsupported file type"
+ * without ever reaching the allow_video branch the test is named for.
+ * Deleting the entire allow_video check left that test green.
+ */
+function webm(): Buffer {
+  const docType = 'webm'
+  const offset = 20
+  const buffer = Buffer.alloc(64)
+
+  buffer[0] = 0x1a
+  buffer[1] = 0x45
+  buffer[2] = 0xdf
+  buffer[3] = 0xa3
+  buffer[offset] = 0x42
+  buffer[offset + 1] = 0x82
+  buffer[offset + 2] = 0x80 | docType.length
+  buffer.write(docType, offset + 3, 'ascii')
+
+  return buffer
+}
+
+/**
  * `expect(promise).rejects.toThrow()` is unreliable for workflow `.run()`
  * promises in this test runner - documented already in
  * update-review-settings-compensation.spec.ts, where it intermittently
@@ -42,13 +70,23 @@ async function largeNoisyPngBuffer(): Promise<Buffer> {
  * throws when awaited in a plain try/catch, but `.rejects.toThrow()`
  * reported "did not throw" for all five of them. A try/catch is used
  * instead, matching the existing house pattern.
+ *
+ * `messageIncludes` is required, not optional: asserting only that
+ * *something* threw meant every rejection test here passed on any error at
+ * all - a wrong error from a different gate, a fixture typo, a dropped DB
+ * connection. That is how the allow_video test above spent its whole life
+ * testing the format sniffer instead.
  */
-async function expectRejection(promise: Promise<unknown>): Promise<void> {
+async function expectRejection(
+  promise: Promise<unknown>,
+  messageIncludes: string
+): Promise<void> {
   let threw = false
   try {
     await promise
-  } catch {
+  } catch (error) {
     threw = true
+    expect((error as Error).message).toContain(messageIncludes)
   }
   expect(threw).toBe(true)
 }
@@ -93,7 +131,8 @@ medusaIntegrationTestRunner({
         await expectRejection(
           uploadReviewMediaWorkflow(getContainer()).run({
             input: { files: [{ filename: 'innocent.png', content: shell, size_bytes: 20 }] },
-          })
+          }),
+          'Unsupported file type for innocent.png'
         )
       })
 
@@ -119,7 +158,8 @@ medusaIntegrationTestRunner({
                 },
               ],
             },
-          })
+          }),
+          'huge.png exceeds the 1MB limit'
         )
       })
 
@@ -143,26 +183,41 @@ medusaIntegrationTestRunner({
                 { filename: 'lied-about-size.png', content: buf.toString('base64'), size_bytes: 1 },
               ],
             },
-          })
+          }),
+          'lied-about-size.png exceeds the 1MB limit'
         )
       })
 
       it('rejects video uploads when allow_video is off', async () => {
         const container = getContainer()
 
+        // Positive control first, with video still allowed: this proves the
+        // fixture actually reaches the allow_video branch instead of dying
+        // at the sniffer. Without it the rejection below proves only that
+        // *something* refused the file, which is exactly how this test
+        // previously passed while testing nothing about allow_video.
+        const { result } = await uploadReviewMediaWorkflow(container).run({
+          input: {
+            files: [
+              { filename: 'clip.webm', content: webm().toString('base64'), size_bytes: 100 },
+            ],
+          },
+        })
+        expect(result.media[0].mime_type).toBe('video/webm')
+
         await updateReviewSettingsWorkflow(container).run({
           input: { allow_video: false },
         })
 
-        const webm = Buffer.concat([
-          Buffer.from([0x1a, 0x45, 0xdf, 0xa3]),
-          Buffer.alloc(64),
-        ]).toString('base64')
-
         await expectRejection(
           uploadReviewMediaWorkflow(container).run({
-            input: { files: [{ filename: 'clip.webm', content: webm, size_bytes: 100 }] },
-          })
+            input: {
+              files: [
+                { filename: 'clip.webm', content: webm().toString('base64'), size_bytes: 100 },
+              ],
+            },
+          }),
+          'Video uploads are disabled'
         )
       })
 
@@ -178,7 +233,8 @@ medusaIntegrationTestRunner({
             input: {
               files: [{ filename: 'photo.png', content: await pngBase64(), size_bytes: 100 }],
             },
-          })
+          }),
+          'Media uploads are disabled'
         )
       })
 
@@ -200,7 +256,8 @@ medusaIntegrationTestRunner({
                 { filename: 'c.png', content, size_bytes: 100 },
               ],
             },
-          })
+          }),
+          'At most 2 files may be uploaded'
         )
       })
     })
