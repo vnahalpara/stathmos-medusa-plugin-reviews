@@ -112,6 +112,34 @@ medusaIntegrationTestRunner({
           })
         )
       })
+
+      // Regression test for the Phase 1 bug this task was warned not to
+      // reintroduce: an unknown-id check written as a length comparison
+      // (`rows.length !== media_ids.length`) under-counts a batch that
+      // repeats a single valid id, and wrongly reports "unknown media" for
+      // an entirely valid submission. Set-membership handles this
+      // correctly - this pins that the id is attached exactly once, not
+      // rejected and not duplicated.
+      it('attaches the same valid id once even when it is submitted twice in one batch', async () => {
+        const container = getContainer()
+        const mediaId = await uploadOne(container)
+
+        const { result: review } = await createReviewWorkflow(container).run({
+          input: {
+            product_id: 'prod_dup',
+            rating: 5,
+            content: 'x'.repeat(20),
+            display_name: 'Dup',
+            media_ids: [mediaId, mediaId],
+          },
+        })
+
+        const service = container.resolve(REVIEW_MODULE)
+        const rows = await service.listReviewMedias({ id: mediaId })
+
+        expect(rows).toHaveLength(1)
+        expect(rows[0].review_id).toEqual(review.id)
+      })
     })
   },
 })

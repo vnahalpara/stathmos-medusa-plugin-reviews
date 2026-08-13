@@ -1,16 +1,27 @@
 import { createStep, StepResponse } from '@medusajs/framework/workflows-sdk'
-import { MedusaError } from '@medusajs/framework/utils'
+import { ContainerRegistrationKeys, MedusaError } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../modules/review'
 
 type Input = { review_id: string; media_ids: string[] }
+type MediaRow = { id: string }
 
 /**
  * Media is uploaded anonymously (Task 4) before the review that will own it
  * exists, so `media_ids` arriving here are bare, guessable-looking ids with
  * no proof of who uploaded them. Refusing an id that is already attached to
  * a review is what stops one shopper claiming another shopper's uploaded
- * photo by guessing or reusing its id - see the "already attached" check
- * below, which is the load-bearing assertion for this step.
+ * photo by guessing or reusing its id - see the atomic claim below, which is
+ * the load-bearing logic for this step.
+ *
+ * LANDMINE for whoever builds delete-review or media reassignment: the only
+ * thing that ever sets a claimed row's review_id back to null today is this
+ * step's own compensation, which only runs within the same createReviewWorkflow
+ * run that claimed it. moderateReviewsWorkflow never touches review_media, so
+ * a *rejected* review's media stays claimed forever - there is no orphan-sweep
+ * or moderation path that frees it. That is fine today (nothing needs those
+ * ids back), but a future feature that deletes or reassigns a review must
+ * explicitly null out review_id on its media first, or those rows strand
+ * permanently attached to a review that no longer exists / no longer wants them.
  */
 export const attachReviewMediaStep = createStep(
   'attach-review-media',
@@ -19,30 +30,79 @@ export const attachReviewMediaStep = createStep(
       return new StepResponse({ attached: [] as string[] }, [] as string[])
     }
 
-    const service = container.resolve(REVIEW_MODULE)
-    const rows = await service.listReviewMedias({ id: input.media_ids })
+    // Dedup once, up front: every check and every query below (existence,
+    // the atomic claim, sort_order assignment) operates on this list, so a
+    // duplicate id submitted twice in one batch can never desync a count
+    // check from a write.
+    const uniqueIds = [...new Set(input.media_ids)]
 
-    // Set membership, not a length comparison: a batch containing the same
-    // id twice would under-count against media_ids.length and wrongly
-    // report "unknown media" even though every id is valid.
-    if (rows.length !== new Set(input.media_ids).size) {
+    const service = container.resolve(REVIEW_MODULE)
+    const rows = await service.listReviewMedias({ id: uniqueIds })
+
+    // Set membership, not a length comparison against the raw input: a
+    // batch containing the same id twice would under-count against
+    // media_ids.length and wrongly report "unknown media" even though
+    // every id is valid. uniqueIds is already deduped, so this comparison
+    // is exact.
+    if (rows.length !== uniqueIds.length) {
       throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Unknown media')
     }
 
-    const claimed = rows.filter((row) => row.review_id !== null)
+    // The read above cannot be trusted as the basis for the claim: it is a
+    // separate DB round trip from the write, so two concurrent
+    // createReviewWorkflow runs submitting the same not-yet-attached media
+    // id could both see review_id === null here before either write
+    // commits - last write wins, and both callers believe they succeeded.
+    // service.updateReviewMedias() cannot close this window either, even
+    // given a `{ selector, data }` filter: MedusaService's generated
+    // update() always does its own SELECT-then-per-entity-UPDATE-by-
+    // primary-key under the hood (see AbstractService.update in
+    // @medusajs/utils), which never re-applies the selector's review_id
+    // condition to the actual UPDATE's WHERE clause - it is the exact same
+    // race shifted one layer down, not removed. A single conditional
+    // UPDATE ... WHERE review_id IS NULL, issued directly, is the only
+    // thing that lets the database itself decide who wins, so the claim is
+    // done here as raw SQL via the shared connection rather than through
+    // the module service.
+    const knex = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
 
-    if (claimed.length) {
+    const claimedRows: MediaRow[] = await knex('review_media')
+      .whereIn('id', uniqueIds)
+      .whereNull('review_id')
+      .whereNull('deleted_at')
+      .update({ review_id: input.review_id, updated_at: new Date() })
+      .returning('id')
+
+    const claimedIds = claimedRows.map((row) => row.id)
+
+    if (claimedIds.length !== uniqueIds.length) {
+      // Partial success is possible: the UPDATE above claims whichever ids
+      // were still unattached at the instant it ran, so some ids in this
+      // batch may have committed while others - already attached at read
+      // time, or claimed by a concurrent request in the window between the
+      // read above and this write - did not. The orchestrator only
+      // compensates steps that already returned a StepResponse, and this
+      // invocation is about to throw without returning one, so nothing
+      // will undo a partial claim automatically. Release whatever this
+      // call did manage to claim itself, then refuse the whole batch.
+      if (claimedIds.length) {
+        await knex('review_media').whereIn('id', claimedIds).update({ review_id: null })
+      }
+
       throw new MedusaError(
         MedusaError.Types.NOT_ALLOWED,
         'Media is already attached to a review'
       )
     }
 
-    await service.updateReviewMedias(
-      rows.map((row, i) => ({ id: row.id, review_id: input.review_id, sort_order: i }))
-    )
+    // Every id in this batch is now exclusively claimed by this review -
+    // no concurrent request can be racing to touch these specific rows
+    // (their review_id is no longer null, so nobody else's claim query can
+    // match them), so a plain, non-atomic update for the cosmetic gallery
+    // order is safe here.
+    await service.updateReviewMedias(uniqueIds.map((id, i) => ({ id, sort_order: i })))
 
-    return new StepResponse({ attached: rows.map((r) => r.id) }, rows.map((r) => r.id))
+    return new StepResponse({ attached: uniqueIds }, uniqueIds)
   },
   async (mediaIds, { container }) => {
     if (!mediaIds?.length) {
@@ -50,8 +110,6 @@ export const attachReviewMediaStep = createStep(
     }
 
     const service = container.resolve(REVIEW_MODULE)
-    await service.updateReviewMedias(
-      mediaIds.map((id) => ({ id, review_id: null }))
-    )
+    await service.updateReviewMedias(mediaIds.map((id) => ({ id, review_id: null })))
   }
 )
