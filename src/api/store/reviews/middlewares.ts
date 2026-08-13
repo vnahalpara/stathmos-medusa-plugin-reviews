@@ -94,6 +94,7 @@ export const CreateReviewSchema = z
     content: z.string().min(1).max(20000),
     display_name: z.string().min(1).max(100).optional(),
     email: z.string().email().optional(),
+    media_ids: z.array(z.string().min(1)).max(20).optional(),
   })
   .strict()
 
