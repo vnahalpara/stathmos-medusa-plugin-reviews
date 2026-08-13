@@ -1,8 +1,30 @@
 import { createStep, StepResponse } from '@medusajs/framework/workflows-sdk'
 import { MedusaContainer } from '@medusajs/framework/types'
+import { MedusaError } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../modules/review'
 
 type Input = { product_id: string }
+
+/**
+ * Two concurrent first-time recomputes for the same product both see no
+ * existing review_stats row and race to create one. Postgres's unique index
+ * on product_id catches the loser, but the DB layer (see @medusajs/utils's
+ * db-error-mapper) remaps that from a raw driver error into a MedusaError
+ * before it reaches here - it never carries the Postgres error code, so a
+ * generic "is this a unique-violation" check (e.g. isDuplicateError) cannot
+ * see it. Matching on the mapper's own INVALID_DATA + "already exists"
+ * shape is what's actually observable at this layer, scoped further to
+ * "product_id" so it cannot accidentally swallow an unrelated INVALID_DATA
+ * error from elsewhere in this function.
+ */
+function isDuplicateProductStatsError(error: unknown): boolean {
+  return (
+    error instanceof MedusaError &&
+    error.type === MedusaError.Types.INVALID_DATA &&
+    error.message.includes('already exists') &&
+    error.message.includes('product_id')
+  )
+}
 
 export async function recomputeReviewStats(
   container: MedusaContainer,
@@ -41,9 +63,28 @@ export async function recomputeReviewStats(
 
   const [existing] = await service.listReviewStats({ product_id: productId })
 
-  return existing
-    ? await service.updateReviewStats({ id: existing.id, ...values })
-    : await service.createReviewStats(values)
+  if (existing) {
+    return await service.updateReviewStats({ id: existing.id, ...values })
+  }
+
+  try {
+    return await service.createReviewStats(values)
+  } catch (error) {
+    if (!isDuplicateProductStatsError(error)) {
+      throw error
+    }
+
+    // Fall back to updating whichever row won the race instead of failing
+    // the caller - the data is derived and idempotent, so converging on a
+    // single row is correct regardless of which insert actually landed.
+    const [winner] = await service.listReviewStats({ product_id: productId })
+
+    if (!winner) {
+      throw error
+    }
+
+    return await service.updateReviewStats({ id: winner.id, ...values })
+  }
 }
 
 /**

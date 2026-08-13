@@ -109,6 +109,33 @@ medusaIntegrationTestRunner({
         expect(rows).toHaveLength(1)
         expect(rows[0]).toMatchObject({ count: 1, average: 3 })
       })
+
+      it('resolves both callers without error when two first-time recomputes race for the same product', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        // A never-before-seen product_id: no review_stats row exists yet,
+        // which is exactly the window where two concurrent recomputes both
+        // see "nothing exists" and race to create the row.
+        await service.createReviews({
+          product_id: 'prod_race',
+          display_name: 'G',
+          rating: 4,
+          content: 'x'.repeat(10),
+          status: 'approved',
+        })
+
+        const results = await Promise.all([
+          recomputeReviewStats(container, 'prod_race'),
+          recomputeReviewStats(container, 'prod_race'),
+        ])
+
+        expect(results).toHaveLength(2)
+
+        const rows = await service.listReviewStats({ product_id: 'prod_race' })
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toMatchObject({ count: 1, average: 4 })
+      })
     })
   },
 })
