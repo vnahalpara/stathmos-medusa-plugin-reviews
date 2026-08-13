@@ -1,9 +1,8 @@
 import { createStep, StepResponse } from '@medusajs/framework/workflows-sdk'
-import { ContainerRegistrationKeys, MedusaError } from '@medusajs/framework/utils'
+import { MedusaError } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../modules/review'
 
 type Input = { review_id: string; media_ids: string[] }
-type MediaRow = { id: string }
 
 /**
  * Media is uploaded anonymously (Task 4) before the review that will own it
@@ -61,32 +60,25 @@ export const attachReviewMediaStep = createStep(
     // condition to the actual UPDATE's WHERE clause - it is the exact same
     // race shifted one layer down, not removed. A single conditional
     // UPDATE ... WHERE review_id IS NULL, issued directly, is the only
-    // thing that lets the database itself decide who wins, so the claim is
-    // done here as raw SQL via the shared connection rather than through
-    // the module service.
-    const knex = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
-
-    const claimedRows: MediaRow[] = await knex('review_media')
-      .whereIn('id', uniqueIds)
-      .whereNull('review_id')
-      .whereNull('deleted_at')
-      .update({ review_id: input.review_id, updated_at: new Date() })
-      .returning('id')
-
-    const claimedIds = claimedRows.map((row) => row.id)
+    // thing that lets the database itself decide who wins - done in
+    // claimMediaForReview() on the review module's own service, through
+    // its own EntityManager/connection, so an isolated module database
+    // (a documented Medusa capability) is never silently bypassed the way
+    // resolving a shared connection from the app container would risk.
+    const claimedIds = await service.claimMediaForReview(uniqueIds, input.review_id)
 
     if (claimedIds.length !== uniqueIds.length) {
-      // Partial success is possible: the UPDATE above claims whichever ids
-      // were still unattached at the instant it ran, so some ids in this
-      // batch may have committed while others - already attached at read
-      // time, or claimed by a concurrent request in the window between the
-      // read above and this write - did not. The orchestrator only
-      // compensates steps that already returned a StepResponse, and this
-      // invocation is about to throw without returning one, so nothing
-      // will undo a partial claim automatically. Release whatever this
-      // call did manage to claim itself, then refuse the whole batch.
+      // Partial success is possible: the claim above locks in whichever
+      // ids were still unattached at the instant it ran, so some ids in
+      // this batch may have committed while others - already attached at
+      // read time, or claimed by a concurrent request in the window
+      // between the read above and this write - did not. The orchestrator
+      // only compensates steps that already returned a StepResponse, and
+      // this invocation is about to throw without returning one, so
+      // nothing will undo a partial claim automatically. Release whatever
+      // this call did manage to claim itself, then refuse the whole batch.
       if (claimedIds.length) {
-        await knex('review_media').whereIn('id', claimedIds).update({ review_id: null })
+        await service.updateReviewMedias(claimedIds.map((id) => ({ id, review_id: null })))
       }
 
       throw new MedusaError(
