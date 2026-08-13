@@ -1,6 +1,10 @@
 import { MedusaContainer } from '@medusajs/framework/types'
 import { Modules } from '@medusajs/framework/utils'
-import { createCustomersWorkflow } from '@medusajs/medusa/core-flows'
+import {
+  createCustomersWorkflow,
+  createSalesChannelsWorkflow,
+  linkSalesChannelsToApiKeyWorkflow,
+} from '@medusajs/medusa/core-flows'
 import jwt from 'jsonwebtoken'
 
 // Every /store/* request is rejected with 400 before it reaches a route
@@ -16,6 +20,35 @@ export async function getPublishableKeyHeaders(
   ])
 
   return { 'x-publishable-api-key': key.token }
+}
+
+// Core `/store/products*` routes (unlike this plugin's own store routes)
+// only return a product if the requesting publishable API key is scoped to
+// a sales channel the product is assigned to - so exercising those core
+// routes needs a key linked to a sales channel, not just any publishable
+// key. Returns the sales channel id too, so the caller can assign a product
+// to it via createProductsWorkflow's `sales_channels` input.
+export async function getPublishableKeyHeadersForSalesChannel(
+  container: MedusaContainer
+): Promise<{ headers: { 'x-publishable-api-key': string }; salesChannelId: string }> {
+  const apiKeyModule = container.resolve(Modules.API_KEY)
+  const [key] = await apiKeyModule.createApiKeys([
+    { title: 'store-product-listing test', type: 'publishable', created_by: '' },
+  ])
+
+  const { result: salesChannels } = await createSalesChannelsWorkflow(container).run({
+    input: { salesChannelsData: [{ name: 'Test channel' }] },
+  })
+  const salesChannel = salesChannels[0]
+
+  await linkSalesChannelsToApiKeyWorkflow(container).run({
+    input: { id: key.id, add: [salesChannel.id] },
+  })
+
+  return {
+    headers: { 'x-publishable-api-key': key.token },
+    salesChannelId: salesChannel.id,
+  }
 }
 
 // Mirrors helpers/admin.ts's approach of signing a JWT directly against the

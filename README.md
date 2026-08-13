@@ -90,6 +90,30 @@ public-hoist-pattern[]=@stathmos/*
 npm and yarn need no such workaround. This is a pnpm/Medusa interaction, not
 specific to this plugin — it affects any Medusa plugin that ships a module.
 
+### Upgrading from a pre-release build with the `review`/`product` link
+
+An early, unreleased commit on the Phase 1 branch briefly added a
+`review`/`product` module link, later withdrawn (see the CHANGELOG's
+Unreleased section) because it let Medusa's core `/store/products` routes
+leak raw review rows — guest emails and unmoderated content — to anyone
+with a publishable API key. If you never ran that commit's `db:migrate`
+against your database, there is nothing to do. If you did, your database
+has a leftover `review_review_product_product` table that this version no
+longer manages. Running `npx medusa db:migrate` again detects the removed
+link and interactively prompts you to select it for deletion:
+
+```
+? Select the tables to DELETE. The following links have been removed
+❯◯ review.review <> product.product (review_review_product_product)
+```
+
+Select it (space, then enter) to drop the table. This prompt needs an
+interactive terminal — running `db:migrate` unattended (CI, a scripted
+deploy) will leave the prompt waiting on stdin, so run it interactively at
+least once after upgrading. Leaving the table unconfirmed is inert (nothing
+in this plugin reads or writes it once the link definition is gone) but it
+is safe and recommended to clean it up.
+
 ## API
 
 Nine endpoints ship in Phase 1:
