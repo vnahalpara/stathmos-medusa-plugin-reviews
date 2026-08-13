@@ -25,15 +25,66 @@ function truncatedFtyp(): Buffer {
   return b
 }
 
-function ebml(docType?: string): Buffer {
-  const b = Buffer.alloc(64)
+function ebml(
+  docType?: string,
+  options: { offset?: number; bufferLength?: number } = {}
+): Buffer {
+  const offset = options.offset ?? 20
+  const bufferLength =
+    options.bufferLength ??
+    Math.max(64, offset + 3 + (docType?.length ?? 0) + 8)
+  const b = Buffer.alloc(bufferLength)
   b[0] = 0x1a
   b[1] = 0x45
   b[2] = 0xdf
   b[3] = 0xa3
+
   if (docType) {
-    b.write(docType, 20, 'ascii')
+    // DocType element: ID 0x42 0x82, single-byte size (high bit set, low 7
+    // bits = length), then the ASCII value.
+    b[offset] = 0x42
+    b[offset + 1] = 0x82
+    b[offset + 2] = 0x80 | docType.length
+    b.write(docType, offset + 3, 'ascii')
   }
+
+  return b
+}
+
+function matroskaWithDecoyWebmText(): Buffer {
+  const b = Buffer.alloc(128)
+  b[0] = 0x1a
+  b[1] = 0x45
+  b[2] = 0xdf
+  b[3] = 0xa3
+  // A MuxingApp/WritingApp-style string that appears before the real
+  // DocType element and happens to contain the literal substring "webm".
+  // A substring search over the header would misclassify this; reading the
+  // actual DocType element must not.
+  b.write('libwebmux 1.0 (webm-flavored fork)', 8, 'ascii')
+
+  const docType = 'matroska'
+  const offset = 70
+  b[offset] = 0x42
+  b[offset + 1] = 0x82
+  b[offset + 2] = 0x80 | docType.length
+  b.write(docType, offset + 3, 'ascii')
+
+  return b
+}
+
+function ebmlMalformedDocTypeSize(): Buffer {
+  const b = Buffer.alloc(32)
+  b[0] = 0x1a
+  b[1] = 0x45
+  b[2] = 0xdf
+  b[3] = 0xa3
+  const offset = 10
+  b[offset] = 0x42
+  b[offset + 1] = 0x82
+  // High bit not set: not the single-byte VINT size form this parser
+  // supports. Must be rejected outright, not misread as some other length.
+  b[offset + 2] = 0x05
   return b
 }
 
@@ -92,6 +143,20 @@ describe('sniffMime', () => {
 
   it('rejects an EBML file with no recognizable DocType', () => {
     expect(sniffMime(ebml())).toBeNull()
+  })
+
+  it('rejects a Matroska file even when a MuxingApp string contains "webm"', () => {
+    expect(sniffMime(matroskaWithDecoyWebmText())).toBeNull()
+  })
+
+  it('detects webm when the DocType element sits beyond the old 64-byte window', () => {
+    expect(sniffMime(ebml('webm', { offset: 100, bufferLength: 150 }))).toBe(
+      'video/webm'
+    )
+  })
+
+  it('rejects an EBML file with a malformed DocType size byte instead of throwing', () => {
+    expect(sniffMime(ebmlMalformedDocTypeSize())).toBeNull()
   })
 
   it('returns null for a disallowed type even though it is a real image', () => {

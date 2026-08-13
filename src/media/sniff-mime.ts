@@ -45,10 +45,54 @@ const MP4_BRANDS = new Set([
   'dash',
 ])
 
-// How far into an EBML header to scan for the DocType string. Not a full
-// EBML parser: just enough to find the (small, near-the-front) DocType
-// element without decoding EBML element IDs/sizes byte by byte.
-const EBML_HEADER_SCAN_LENGTH = 64
+// How far into an EBML header to scan for the DocType element (ID 0x42 0x82).
+// Not a full EBML parser: just far enough to find that one element. DocType
+// is matched exactly (not a substring search), so it's safe to scan a wide
+// window without risking a match on unrelated text (e.g. a MuxingApp string)
+// elsewhere in the header.
+const EBML_HEADER_SCAN_LENGTH = 256
+
+/**
+ * Reads the value of the EBML DocType element (ID 0x42 0x82) from the first
+ * `scanLength` bytes of `buf`, or `null` if it isn't found or can't be
+ * parsed. This is not a general EBML/VINT decoder: DocType's size is always
+ * small in practice, so only the single-byte size form (high bit set, low 7
+ * bits = length) is supported. A size byte without the high bit set is
+ * treated as unparseable rather than guessed at.
+ */
+const ebmlDocType = (buf: Buffer, scanLength: number): string | null => {
+  const limit = Math.min(buf.length, scanLength)
+
+  for (let i = 0; i < limit - 1; i++) {
+    if (buf[i] !== 0x42 || buf[i + 1] !== 0x82) {
+      continue
+    }
+
+    const sizeByteIndex = i + 2
+
+    if (sizeByteIndex >= buf.length) {
+      return null
+    }
+
+    const sizeByte = buf[sizeByteIndex]
+
+    if ((sizeByte & 0x80) === 0) {
+      return null
+    }
+
+    const length = sizeByte & 0x7f
+    const valueStart = sizeByteIndex + 1
+    const valueEnd = valueStart + length
+
+    if (valueEnd > buf.length) {
+      return null
+    }
+
+    return buf.subarray(valueStart, valueEnd).toString('ascii')
+  }
+
+  return null
+}
 
 export function sniffMime(buffer: Buffer): string | null {
   if (!buffer || buffer.length < 8) {
@@ -88,14 +132,13 @@ export function sniffMime(buffer: Buffer): string | null {
 
   // Matroska/WebM EBML header. The 0x1A45DFA3 magic is shared by both
   // formats — Matroska (.mkv) is not a valid upload here, so the DocType
-  // element must be inspected to tell them apart. It appears as a raw
-  // ASCII string ("webm" or "matroska") near the front of the header.
+  // element must be read (element ID 0x42 0x82) and compared exactly, not
+  // just searched for as a substring: a Matroska file's MuxingApp/WritingApp
+  // strings can legitimately contain arbitrary text, including "webm".
   if (startsWith(buffer, [0x1a, 0x45, 0xdf, 0xa3])) {
-    const header = buffer
-      .subarray(0, Math.min(buffer.length, EBML_HEADER_SCAN_LENGTH))
-      .toString('latin1')
-
-    return header.includes('webm') ? 'video/webm' : null
+    return ebmlDocType(buffer, EBML_HEADER_SCAN_LENGTH) === 'webm'
+      ? 'video/webm'
+      : null
   }
 
   return null
