@@ -3,11 +3,13 @@ import {
   transform,
   WorkflowResponse,
 } from '@medusajs/framework/workflows-sdk'
-import { emitEventStep } from '@medusajs/medusa/core-flows'
+import { createRemoteLinkStep, emitEventStep } from '@medusajs/medusa/core-flows'
+import { Modules } from '@medusajs/framework/utils'
 import { checkVerifiedPurchaseStep } from './steps/check-verified-purchase'
 import { validateReviewSubmissionStep } from './steps/validate-review-submission'
 import { createReviewStep } from './steps/create-review'
 import { recomputeReviewStatsStep } from './steps/recompute-review-stats'
+import { REVIEW_MODULE } from '../modules/review'
 
 export type CreateReviewInput = {
   product_id: string
@@ -48,6 +50,17 @@ export const createReviewWorkflow = createWorkflow(
         status: data.validation.status,
         is_verified_purchase: data.isVerified,
       }))
+    )
+
+    // Order matters: review first, then product, matching src/links/review-product.ts's
+    // defineLink call. A mismatched order fails at runtime.
+    createRemoteLinkStep(
+      transform({ review, input }, (data) => [
+        {
+          [REVIEW_MODULE]: { review_id: data.review.id },
+          [Modules.PRODUCT]: { product_id: data.input.product_id },
+        },
+      ])
     )
 
     // An auto-approved review is immediately public, so the summary must
