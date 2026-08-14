@@ -211,21 +211,28 @@ medusaIntegrationTestRunner({
         expect(remaining).toHaveLength(0)
       })
 
-      it('hard-deletes the row, not just soft-deletes it, freeing the review_id for a new reply', async () => {
+      it('hard-deletes the row, not just soft-deletes it', async () => {
         await api.post(`/admin/reviews/${reviewId}/reply`, { content: 'Thanks!' }, adminHeaders)
         await api.delete(`/admin/reviews/${reviewId}/reply`, adminHeaders)
 
-        // A merchant should be able to post a fresh reply right after
-        // deleting the old one. If the delete were soft, the row would
-        // still occupy the partial unique index and this would 500 on the
-        // constraint instead of succeeding.
-        const reposted = await api.post(
-          `/admin/reviews/${reviewId}/reply`,
-          { content: 'Second try' },
-          adminHeaders
+        // Asserts on the actual row, including soft-deleted ones - not on
+        // whether a repost afterwards succeeds. A repost is a poor proxy
+        // here: the POST handler is an upsert (service.upsertReviewReply,
+        // ON CONFLICT ("review_id") WHERE "deleted_at" IS NULL DO UPDATE),
+        // so it succeeds after a hard delete, a soft delete, or even no
+        // delete at all - a still-present row just gets updated in place.
+        // The partial unique index (`WHERE deleted_at IS NULL`) also does
+        // NOT block a soft-deleted row from a repost; it deliberately
+        // excludes it. `withDeleted: true` is what actually distinguishes
+        // hard from soft: a hard delete leaves no row at all, even with
+        // `withDeleted: true`; a soft delete leaves one row with
+        // `deleted_at` set.
+        const service = getContainer().resolve(REVIEW_MODULE)
+        const rows = await service.listReviewReplies(
+          { review_id: reviewId },
+          { withDeleted: true }
         )
-        expect(reposted.status).toEqual(200)
-        expect(reposted.data.reply.content).toEqual('Second try')
+        expect(rows).toHaveLength(0)
       })
 
       it('deleting a reply that does not exist is a 404, not a 500', async () => {

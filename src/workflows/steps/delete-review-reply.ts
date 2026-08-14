@@ -24,6 +24,15 @@ type Input = { review_id: string }
  * workflow failed would be silent data loss they never authorised - the
  * merchant asked for the reply to go away, not for it to vanish as a side
  * effect of something else breaking.
+ *
+ * The recreated row is not a perfect restore: `createReviewReplies` mints
+ * a fresh `id` and stamps fresh `created_at`/`updated_at` at rollback time,
+ * so a merchant would see "replied just now" rather than the true original
+ * reply time. Accepted for now because this compensation function is
+ * unreachable in production today - `deleteReviewReplyWorkflow` has only
+ * this one step, so nothing downstream can ever fail and trigger it.
+ * Whoever adds a step after this one should know the recreate is lossy in
+ * both id and timestamps before relying on it.
  */
 export const deleteReviewReplyStep = createStep(
   'delete-review-reply',

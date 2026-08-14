@@ -97,12 +97,23 @@ medusaIntegrationTestRunner({
         // deleteReviewReplyStep throws NOT_FOUND before returning a
         // StepResponse, so there is no compensation payload to run - this
         // proves that failure mode doesn't crash the rollback path.
+        //
+        // Snapshots the *total* row count across every review, not just
+        // this one's review_id: scoping the after-assertion to
+        // `review.id` alone would miss a broken guard that fabricated a
+        // reply under some other, unrelated review_id - it would still
+        // read as "0 replies for review.id" and pass. Comparing totals
+        // before/after catches a stray create regardless of which
+        // review_id it lands under.
+        const before = await service.listReviewReplies({}, { withDeleted: true })
+
         await runAndExpectRejection(
           workflowUnderTest(container).run({ input: { review_id: review.id } }),
           'Reply not found'
         )
 
-        expect(await service.listReviewReplies({ review_id: review.id })).toHaveLength(0)
+        const after = await service.listReviewReplies({}, { withDeleted: true })
+        expect(after).toHaveLength(before.length)
       })
     })
   },

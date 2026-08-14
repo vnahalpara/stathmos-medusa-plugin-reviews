@@ -91,9 +91,13 @@ export const upsertReviewReplyStep = createStep(
     if (compensation.created) {
       // A brand-new reply never went live for anyone to have seen as
       // canon, so undoing it is a hard delete, not a soft one -
-      // deleteReviewReplies() is the hard-delete method on this service;
-      // softDeleteReviewReplies() would leave the row (and the partial
-      // unique index) blocking a future reply to this review.
+      // deleteReviewReplies() is the hard-delete method on this service.
+      // softDeleteReviewReplies() would NOT block a future reply here -
+      // the partial unique index is `WHERE deleted_at IS NULL`, so a
+      // soft-deleted row is excluded from it, not blocked by it - but it
+      // would still leave a permanent, orphaned row that nothing ever
+      // cleans up, for a reply that was never actually published. Same
+      // decision, same reasoning, as delete-review-reply.ts's docstring.
       await service.deleteReviewReplies(compensation.id)
       return
     }
