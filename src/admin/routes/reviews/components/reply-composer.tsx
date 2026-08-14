@@ -111,6 +111,37 @@ type ReplyComposerProps = {
  * else in the effect below, so a genuine review switch (or a same-review
  * reopen after a close) always re-seeds from fresh data.
  *
+ * `seededBaseline` is frozen in that SAME pass, not recomputed live from
+ * `replyQuery.data` on every render. If it were live: a background
+ * refetch bringing in another admin's concurrent edit would silently
+ * flip "unchanged" for a textarea the merchant never touched, enabling
+ * Save with no visible change on screen, and a click would overwrite the
+ * other admin's newer reply with this component's stale on-screen text.
+ * Freezing it at seed time means "unchanged" only ever means "unchanged
+ * from what THIS session started editing from."
+ *
+ * ## Why mutation callbacks read `variables`, never the closure
+ * `ReplyComposer` is one mounted instance across review switches (no
+ * `key` - see `activeReviewId`'s own doc comment for why that's the
+ * right call for the reset effect). React Query's `useMutation` calls
+ * `observer.setOptions()` on every render, which re-points a *pending*
+ * mutation's `onSuccess`/`onError` at whatever `activeReviewId` the
+ * LATEST render closed over - not the one active when `.mutate()` was
+ * called. Save a reply on review A, switch to review B before it
+ * settles, and A's `onSuccess` fires with B's closure: writing into
+ * `activeReviewId`'s (now B's) cache entry and, worse, calling
+ * `setContent`/`setDeletePromptOpen` on B's on-screen composer - one
+ * click on a Save button that only *looks* like it belongs to B would
+ * publish A's text as B's public response. `variables` (the argument
+ * `.mutate()` was actually called with) is frozen per call and immune to
+ * this - both callbacks below build their cache key from it and gate
+ * every state setter on `variables.id === activeReviewId` (the CURRENT
+ * value, safe to read here since it's compared, not assigned), so a
+ * late-landing mutation can still correct its own cache entry and
+ * refresh the table, but can never touch a different review's on-screen
+ * textarea or prompt. Do not "simplify" this back to the closure - the
+ * closure is exactly the thing that's unsafe here.
+ *
  * ## Author line (spec decision #3)
  * The backend already enforces that the public author is the store's
  * name, never the replying admin's (`replied_by` never leaves
@@ -137,16 +168,33 @@ type ReplyComposerProps = {
 const ReplyComposer = ({ status, activeReviewId, invalidateTable }: ReplyComposerProps) => {
   const queryClient = useQueryClient()
   const [content, setContent] = useState('')
+  // Frozen at seed time, alongside `content` - NOT derived live from
+  // `replyQuery.data` on every render. See this file's top comment
+  // ("Seeding the draft...", the `seededBaseline` paragraph) for why a
+  // live baseline is unsafe.
+  const [seededBaseline, setSeededBaseline] = useState('')
   const [deletePromptOpen, setDeletePromptOpen] = useState(false)
-  // Which review's reply `content` currently reflects - not review state
-  // itself, just a guard so the seeding effect below only overwrites the
-  // draft once per review rather than on every background refetch. See
-  // this file's top comment ("Seeding the draft...").
+  // Which review's reply `content`/`seededBaseline` currently reflect -
+  // not review state itself, just a guard so the seeding effect below
+  // only overwrites the draft once per review rather than on every
+  // background refetch. See this file's top comment ("Seeding the
+  // draft...").
   const seededForId = useRef<string | undefined>(undefined)
 
-  const replyQueryKey = ['admin-review-reply', activeReviewId]
+  // Builds the query key for a SPECIFIC review id, for use inside
+  // mutation callbacks - see this file's top comment ("Why mutation
+  // callbacks read `variables`...") for why those callbacks must never
+  // build this key from the closed-over `activeReviewId` below.
+  const replyKeyFor = (id: string) => ['admin-review-reply', id] as const
+
   const replyQuery = useQuery({
-    queryKey: replyQueryKey,
+    // This usage - the query's OWN key - is the one place in this file
+    // where reading `activeReviewId` directly is correct: the query
+    // itself is supposed to track whichever review is currently open,
+    // re-keying and re-fetching the instant it changes. The unsafe case
+    // is only ever a mutation callback reading it long after the render
+    // that scheduled the request.
+    queryKey: replyKeyFor(activeReviewId ?? ''),
     queryFn: () => sdk.client.fetch<ReplyGetResponse>(`/admin/reviews/${activeReviewId}/reply`),
     // See this file's top comment for why this gate is not the thing
     // "no enabled tied to UI state" warns against.
@@ -166,20 +214,24 @@ const ReplyComposer = ({ status, activeReviewId, invalidateTable }: ReplyCompose
       return
     }
     setContent('')
+    setSeededBaseline('')
     setDeletePromptOpen(false)
     seededForId.current = undefined
   }, [activeReviewId])
 
   useEffect(() => {
-    // Seeds the draft from the fetched reply exactly once per review -
-    // see this file's top comment for why `seededForId` exists at all.
+    // Seeds the draft (and freezes its baseline) from the fetched reply
+    // exactly once per review - see this file's top comment for why
+    // `seededForId`/`seededBaseline` exist at all.
     if (!activeReviewId || replyQuery.data === undefined) {
       return
     }
     if (seededForId.current === activeReviewId) {
       return
     }
-    setContent(replyQuery.data.reply?.content ?? '')
+    const initialContent = replyQuery.data.reply?.content ?? ''
+    setContent(initialContent)
+    setSeededBaseline(initialContent.trim())
     seededForId.current = activeReviewId
   }, [activeReviewId, replyQuery.data])
 
@@ -202,15 +254,32 @@ const ReplyComposer = ({ status, activeReviewId, invalidateTable }: ReplyCompose
         method: 'POST',
         body: { content: body },
       }),
-    onSuccess: (response) => {
-      // Instant local update (no flash of the pre-save state while a
-      // refetch is in flight) AND a real invalidate - same two-step
-      // `deleteMediaMutation` already uses for `['admin-review-media', id]`
-      // in review-drawer.tsx.
-      queryClient.setQueryData<ReplyGetResponse>(replyQueryKey, { reply: response.reply })
-      queryClient.invalidateQueries({ queryKey: replyQueryKey })
-      setContent(response.reply.content)
+    onSuccess: (response, variables) => {
+      // Cache key built from `variables.id` (frozen at `.mutate()` time),
+      // never from the closed-over `activeReviewId` - see this file's top
+      // comment ("Why mutation callbacks read `variables`..."). This
+      // write is always correct and always runs, even for a review the
+      // merchant has since navigated away from.
+      const key = replyKeyFor(variables.id)
+      queryClient.setQueryData<ReplyGetResponse>(key, { reply: response.reply })
+      queryClient.invalidateQueries({ queryKey: key })
       invalidateTable()
+
+      // State setters that touch the ON-SCREEN composer are gated on the
+      // mutation's own review still being the one displayed - a
+      // late-landing save for a review the merchant has left must update
+      // its cache entry (above) but must NEVER overwrite what's currently
+      // in the textarea for a DIFFERENT review.
+      if (variables.id === activeReviewId) {
+        setContent(response.reply.content)
+        setSeededBaseline(response.reply.content.trim())
+        seededForId.current = variables.id
+      }
+
+      // Not gated: this really did happen, for the review it says it
+      // did, even if the merchant has since moved on - unlike the
+      // setters above, a toast doesn't overwrite anything currently on
+      // screen for a different review.
       toast.success('Reply saved')
     },
     onError: (error) => {
@@ -229,16 +298,31 @@ const ReplyComposer = ({ status, activeReviewId, invalidateTable }: ReplyCompose
         `/admin/reviews/${id}/reply`,
         { method: 'DELETE' }
       ),
-    onSuccess: () => {
-      queryClient.setQueryData<ReplyGetResponse>(replyQueryKey, { reply: null })
-      queryClient.invalidateQueries({ queryKey: replyQueryKey })
-      setContent('')
-      setDeletePromptOpen(false)
+    onSuccess: (_data, variables) => {
+      // `variables` here IS the id `.mutate()` was called with - same
+      // reasoning as `replyMutation` above, not restated field-by-field
+      // since delete's payload is just the id itself.
+      const key = replyKeyFor(variables)
+      queryClient.setQueryData<ReplyGetResponse>(key, { reply: null })
+      queryClient.invalidateQueries({ queryKey: key })
       invalidateTable()
+
+      if (variables === activeReviewId) {
+        setContent('')
+        setSeededBaseline('')
+        setDeletePromptOpen(false)
+      }
+
       toast.success('Reply deleted')
     },
-    onError: (error) => {
-      setDeletePromptOpen(false)
+    onError: (error, variables) => {
+      // Only close a confirmation dialog that's still about the SAME
+      // review this failure came from - a stale failure for a review the
+      // merchant has left must not slam shut a dialog they've since
+      // opened for whatever review they're looking at now.
+      if (variables === activeReviewId) {
+        setDeletePromptOpen(false)
+      }
       toast.error('Failed to delete reply', {
         description: error instanceof Error ? error.message : undefined,
       })
@@ -246,7 +330,7 @@ const ReplyComposer = ({ status, activeReviewId, invalidateTable }: ReplyCompose
   })
 
   const trimmed = content.trim()
-  const baseline = (savedReply?.content ?? '').trim()
+  const baseline = seededBaseline
   const saveDisabled =
     !activeReviewId ||
     replyQuery.isLoading ||
