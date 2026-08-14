@@ -256,10 +256,16 @@ const ReviewSettingsPage = () => {
       // See this file's top comment ("Save: reading the mutation's own
       // result...") - `response` is the mutation's own frozen result, not
       // a closed-over render value.
+      // The POST returns the settings the server just persisted, so this
+      // write IS the fresh value - there is deliberately no
+      // invalidateQueries() alongside it. An immediate background refetch
+      // would add nothing on success and, if that one request happened to
+      // fail, would swap the whole form for "Failed to load settings"
+      // seconds after telling the merchant their save succeeded. Both
+      // statements would be true and the pair reads as data loss.
       queryClient.setQueryData<GetSettingsResponse>(SETTINGS_QUERY_KEY, {
         settings: response.settings,
       })
-      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY })
       setDraft(toDraft(response.settings))
       toast.success('Settings saved')
     },
