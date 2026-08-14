@@ -70,7 +70,13 @@ const EXT_FOR_MIME: Record<string, string> = {
  *
  * randomUUID() rather than a timestamp/counter deliberately: the key is
  * public and unauthenticated-readable, so it is the only thing standing
- * between a rejected review's media and anyone who wants to guess its URL.
+ * between not-yet-deleted review media - pending or approved reviews, or
+ * media left behind by a failed rejection-triggered deletion (see
+ * delete-rejected-review-media.ts) - and anyone who wants to guess its
+ * URL. A rejected review's media is deleted outright, file included, as of
+ * the reject-deletes-media change, which is the stronger protection; this
+ * key is the fallback for everything that deletion doesn't (or can't yet)
+ * remove.
  */
 function storageFilename(mime: string): string {
   const ext = EXT_FOR_MIME[mime]

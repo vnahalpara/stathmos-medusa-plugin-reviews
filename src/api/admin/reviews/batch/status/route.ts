@@ -1,5 +1,6 @@
 import { AuthenticatedMedusaRequest, MedusaResponse } from '@medusajs/framework/http'
 import { moderateReviewsWorkflow } from '../../../../../workflows/moderate-reviews'
+import { deleteMediaForRejectedReviews } from '../../../../../workflows/delete-rejected-review-media'
 import { BatchStatusSchema } from '../../middlewares'
 
 export async function POST(
@@ -9,6 +10,20 @@ export async function POST(
   const { result } = await moderateReviewsWorkflow(req.scope).run({
     input: req.validatedBody,
   })
+
+  // Only when the batch's target status is "rejected" - approving or
+  // resetting to pending must never touch media. Runs only after the
+  // status change above has committed, in its own separate workflow run -
+  // see delete-rejected-review-media.ts for why a media-deletion failure
+  // here must never be able to revert any of these reviews back to
+  // pending, and why one review's failure must not stop the rest of the
+  // batch from being cleaned up.
+  if (req.validatedBody.status === 'rejected') {
+    await deleteMediaForRejectedReviews(
+      req.scope,
+      result.reviews.map((review) => review.id)
+    )
+  }
 
   res.json({ reviews: result.reviews })
 }

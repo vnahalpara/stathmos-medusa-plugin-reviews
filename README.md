@@ -127,8 +127,8 @@ GET    /store/products/:id/reviews/stats    Denormalized rating summary + breakd
 POST   /store/reviews/uploads               Upload review photos/videos (multipart, field name "files")
 GET    /admin/reviews                       List/filter reviews (status, product_id, rating)
 POST   /admin/reviews/:id/approve           Approve one review
-POST   /admin/reviews/:id/reject            Reject one review, with a reason
-POST   /admin/reviews/batch/status          Bulk approve/reject/reset by id
+POST   /admin/reviews/:id/reject            Reject one review, with a reason (permanently deletes its media)
+POST   /admin/reviews/batch/status          Bulk approve/reject/reset by id (rejecting deletes media)
 DELETE /admin/reviews/media/:id             Remove a single media item
 GET    /admin/reviews/settings              Read the current settings
 POST   /admin/reviews/settings              Update settings (partial, no redeploy)
@@ -276,25 +276,30 @@ See [Roadmap](#roadmap).
   upload is not otherwise prevented in this phase — media ids are 80-bit
   ULIDs and are not guessable, but there is no ownership binding during the
   window between upload and attachment. Signed upload tokens are Phase 6.
-- **Rejecting a review does NOT remove its media from storage.** Read that
+- **Rejecting a review permanently deletes its media.** Read that
   literally. `POST /admin/reviews/:id/reject` and
-  `POST /admin/reviews/batch/status` change the review's status and nothing
-  else. Every photo and video attached to a rejected review is still in
-  your file storage and is still served, publicly, at the same URL it had
-  before — the store API stops returning it, and it disappears from the
-  storefront, but the bytes are one URL away for anyone who has that URL.
-  Rejecting for "offensive photo" therefore removes the photo from your
-  product page and **not** from the internet.
-  **`DELETE /admin/reviews/media/:id` is the only thing that removes stored
-  media**, and you must call it explicitly, per media item, in addition to
-  rejecting. If you build moderation tooling on these endpoints, wire that
-  delete into your reject flow yourself.
-  This is deliberate. Deletion is irreversible and rejection is frequently
-  for fixable reasons (wrong product, thin content, a policy detail the
-  shopper can correct), so the plugin does not destroy customer content as
-  a side effect of a reversible moderation action. Server-generated,
-  non-enumerable storage keys mean a rejected review's media is not
-  discoverable by guessing; it is not, and is not claimed to be, deleted.
+  `POST /admin/reviews/batch/status` (when the batch's target status is
+  `rejected`) delete every photo and video attached to the review — the
+  stored file itself, not just the `review_media` row — the moment the
+  review is rejected. This is **irreversible**: there is no undo, and
+  rejecting a review you might reinstate later still destroys its media
+  immediately, not just its visibility. Approving a review, or resetting
+  one back to `pending`, never touches media either way.
+  This was a deliberate reversal of the original Phase 2 decision (kept
+  below for context: deletion used to be opt-in, via
+  `DELETE /admin/reviews/media/:id`, precisely because rejection is
+  frequently for fixable reasons). The current behaviour is an explicit
+  product decision to make rejection destructive, not an oversight — if you
+  need a reversible moderation action, that is `hidden_at` (Phase 4
+  curation tooling), not reject.
+  The status change always commits before media deletion is attempted. If
+  deleting some item's file or row then fails, the review still stays
+  rejected — the failure is logged and does **not** revert the review to
+  `pending` — and any media left behind by that failure is still reachable
+  through `DELETE /admin/reviews/media/:id`, same as before.
+  `DELETE /admin/reviews/media/:id` still exists, unchanged, for removing a
+  single item from a review that is not being rejected (e.g. one offensive
+  photo among several on an otherwise-fine, approved review).
 - **`DELETE /admin/reviews/media/:id` is irreversible.** It removes the
   stored file itself, not just the database row — a row-only delete would
   leave the photo still publicly reachable at its storage URL, which

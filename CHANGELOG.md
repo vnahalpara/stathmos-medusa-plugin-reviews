@@ -31,6 +31,20 @@ else. `DELETE /admin/reviews/media/:id` lets a moderator remove a single
 offensive item — this deletes the stored file itself, not just the
 database row, and is irreversible.
 
+**Rejecting a review now permanently deletes its media.** `POST
+/admin/reviews/:id/reject` and `POST /admin/reviews/batch/status` (target
+status `rejected`) delete every file and `review_media` row attached to a
+review the instant it is rejected — the file is removed from storage
+itself, not just unlinked from the review, and this cannot be undone.
+Approving a review, or resetting one to `pending`, never touches media.
+This is a deliberate design decision, not a bug: a reversible alternative
+was considered and rejected in favour of actually destroying the content.
+The status change always commits first; if media deletion then fails for
+some item, the review still stays rejected (never reverted) and the
+failure is logged, with the leftover media still reachable through `DELETE
+/admin/reviews/media/:id`. This replaces the original Phase 2 behaviour,
+which left a rejected review's media in storage indefinitely.
+
 **Known limitation:** no video transcoding and no server-generated poster
 frame — video is stored exactly as uploaded, and `thumbnail_url` is always
 `null`; storefronts must supply their own poster or use the browser's

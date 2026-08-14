@@ -49,29 +49,32 @@ function unavailableMediaError(): MedusaError {
  * The atomic claim below is still the load-bearing logic of this step; it
  * just guards a narrower thing than the old wording claimed.
  *
- * LANDMINE for whoever builds delete-review or media reassignment: the only
- * thing that ever sets a claimed row's review_id back to null today is this
- * step's own compensation, which only runs within the same createReviewWorkflow
- * run that claimed it. moderateReviewsWorkflow never touches review_media, so
- * a *rejected* review's media stays claimed forever - there is no orphan-sweep
- * or moderation path that frees it. That is fine today (nothing needs those
- * ids back), but a future feature that deletes or reassigns a review must
- * explicitly null out review_id on its media first, or those rows strand
- * permanently attached to a review that no longer exists / no longer wants them.
+ * LANDMINE for whoever builds delete-review (deleting the whole review
+ * record) or media reassignment between reviews: the only thing that ever
+ * sets a claimed row's review_id back to null is this step's own
+ * compensation, which only runs within the same createReviewWorkflow run
+ * that claimed it. Rejection is no longer an instance of this landmine -
+ * see below - but nothing else nulls review_id or otherwise frees these
+ * rows. A future feature that deletes a whole review record, or reassigns
+ * media between reviews, must still explicitly handle its media first (null
+ * out review_id, or delete it outright), or those rows strand permanently
+ * attached to a review that no longer exists / no longer wants them.
  *
- * The rows are not the interesting part of that, though - the BYTES are.
- * The file was uploaded with access: 'public' and stays served at its URL
- * after a rejection, so a moderator who rejects a review for an offensive
- * photo has removed it from the storefront and not from storage. That is a
- * deliberate decision, not an oversight: deletion is irreversible and
- * rejection is frequently for fixable reasons, so a reversible moderation
- * action does not destroy customer content. What makes it defensible is
- * that the key is no longer guessable - see storageFilename() in
- * upload-review-media-files.ts, which replaced a `${Date.now()}-${originalname}`
- * key that a common camera filename plus a millisecond brute force over a
- * known submission window really could enumerate. deleteReviewMediaWorkflow
- * (DELETE /admin/reviews/media/:id) is the removal path, and the README's
- * media section states plainly that rejection is not one.
+ * Rejection itself is handled, and has been since the reject-deletes-media
+ * change: deleteRejectedReviewMediaWorkflow (src/workflows/delete-rejected-
+ * review-media.ts) deletes every row belonging to a review AND each row's
+ * underlying file - file before row, same reasoning as
+ * delete-review-media.ts - the moment that review is rejected, via
+ * POST /admin/reviews/:id/reject or POST /admin/reviews/batch/status. It
+ * runs as its own top-level workflow, started by those routes only after
+ * moderateReviewsWorkflow's status-change run has already committed - see
+ * that file's docstring for why it must never be composed into
+ * moderateReviewsWorkflow's own saga. This is deliberately irreversible: a
+ * reversible alternative (soft-delete, a private-access flip, a settings
+ * toggle) was considered and declined in favour of actually destroying
+ * rejected content, so a moderator who rejects a review for an offensive
+ * photo now removes it from storage, not only from the storefront. See the
+ * README's media section for the full detail.
  */
 export const attachReviewMediaStep = createStep(
   'attach-review-media',
