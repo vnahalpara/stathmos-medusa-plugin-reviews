@@ -108,6 +108,111 @@ medusaIntegrationTestRunner({
         expect(served.headers['content-type']).toMatch(/video\/mp4/)
       })
 
+      /**
+       * The claim the README makes is that the served `Content-Type` is one
+       * this plugin chooses and never one an attacker controls. That claim
+       * was false before the filename fix, so it is worth holding exactly
+       * true rather than approximately: this walks every accepted format,
+       * uploads each under the name `evil.html`, and pins both the
+       * extension the plugin chose and the header core actually emits.
+       *
+       * AVIF is the one format where the emitted header is NOT the sniffed
+       * type: core serves /static through `send` -> `mime@1.6.0`, whose
+       * table predates AVIF, so it answers `application/octet-stream`. That
+       * is not attacker-controlled and per the MIME Sniffing spec is not a
+       * sniffable type, so it is a correctness wrinkle rather than a
+       * security one - but the README says so explicitly, and if core ever
+       * upgrades `mime` this test fails and the README needs updating with
+       * it.
+       */
+      const SERVED_CONTENT_TYPE: Record<string, string> = {
+        'image/png': 'image/png',
+        'image/jpeg': 'image/jpeg',
+        'image/webp': 'image/webp',
+        'image/avif': 'application/octet-stream',
+        'video/mp4': 'video/mp4',
+        'video/webm': 'video/webm',
+      }
+
+      const EXPECTED_EXTENSION: Record<string, string> = {
+        'image/png': 'png',
+        'image/jpeg': 'jpg',
+        'image/webp': 'webp',
+        'image/avif': 'avif',
+        'video/mp4': 'mp4',
+        'video/webm': 'webm',
+      }
+
+      async function fixtureFor(mime: string): Promise<Buffer> {
+        if (mime === 'video/mp4') {
+          return Buffer.concat([
+            Buffer.from([0x00, 0x00, 0x00, 0x20]),
+            Buffer.from('ftypisom', 'ascii'),
+            Buffer.alloc(32),
+          ])
+        }
+
+        if (mime === 'video/webm') {
+          const docType = 'webm'
+          const offset = 20
+          const buffer = Buffer.alloc(64)
+          buffer[0] = 0x1a
+          buffer[1] = 0x45
+          buffer[2] = 0xdf
+          buffer[3] = 0xa3
+          buffer[offset] = 0x42
+          buffer[offset + 1] = 0x82
+          buffer[offset + 2] = 0x80 | docType.length
+          buffer.write(docType, offset + 3, 'ascii')
+          return buffer
+        }
+
+        const format = mime.split('/')[1] as 'png' | 'jpeg' | 'webp' | 'avif'
+        return await sharp({
+          create: { width: 8, height: 8, channels: 3, background: '#123456' },
+        })
+          [format]()
+          .toBuffer()
+      }
+
+      it.each(Object.keys(SERVED_CONTENT_TYPE))(
+        'serves %s under a plugin-chosen extension and a non-text Content-Type',
+        async (mime) => {
+          const form = new FormData()
+          form.append(
+            'files',
+            new Blob([await fixtureFor(mime)] as BlobPart[], { type: 'text/html' }),
+            'evil.html'
+          )
+
+          const response = await api.post('/store/reviews/uploads', form, {
+            headers: storeHeaders,
+          })
+
+          expect(response.status).toEqual(201)
+          expect(response.data.media[0].mime_type).toEqual(mime)
+
+          const url: string = response.data.media[0].url
+          expect(url.endsWith(`.${EXPECTED_EXTENSION[mime]}`)).toBe(true)
+          expect(url).not.toContain('evil')
+
+          const served = await api.get(new URL(url).pathname, {
+            headers: storeHeaders,
+            responseType: 'arraybuffer',
+          })
+
+          const contentType = String(served.headers['content-type'])
+
+          // The security property, unconditional for every format: nothing
+          // an attacker uploads is ever served as a renderable text type.
+          expect(contentType).not.toMatch(/^text\//)
+
+          // The precise property, per format - this is what the README
+          // documents.
+          expect(contentType.split(';')[0].trim()).toEqual(SERVED_CONTENT_TYPE[mime])
+        }
+      )
+
       it('rejects a request with no files', async () => {
         const response = await api
           .post('/store/reviews/uploads', new FormData(), { headers: storeHeaders })
@@ -225,6 +330,41 @@ medusaIntegrationTestRunner({
         expect(response.status).toEqual(400)
         expect(response.data.type).toEqual('invalid_data')
         expect(response.data.message).toMatch(/6000x6000/)
+      })
+
+      // A NUL byte in the filename makes busboy's part-header parser throw
+      // a bare Error ("Malformed part header"), which is neither a
+      // MulterError nor a MediaDecodeError - so it fell through both
+      // conversions to an opaque 500 for a body the client malformed.
+      // Hand-built rather than via FormData: a native FormData would
+      // sanitise the filename before it ever reached the wire.
+      it('reports a malformed multipart part header as a 400, not a 500', async () => {
+        const boundary = 'MALFORMEDPARTBOUNDARY'
+        const body = Buffer.from(
+          [
+            `--${boundary}`,
+            `Content-Disposition: form-data; name="files"; filename="sh\u0000ort.png"`,
+            'Content-Type: image/png',
+            '',
+            'somebytes',
+            `--${boundary}--`,
+            '',
+          ].join('\r\n'),
+          'binary'
+        )
+
+        const response = await api
+          .post('/store/reviews/uploads', body, {
+            headers: {
+              ...storeHeaders,
+              'content-type': `multipart/form-data; boundary=${boundary}`,
+            },
+          })
+          .catch((e) => e.response)
+
+        expect(response.status).toEqual(400)
+        expect(response.data.type).toEqual('invalid_data')
+        expect(response.data.message.toLowerCase()).toContain('malformed')
       })
 
       // Proves the conversion in uploadReviewMediaFiles is narrowly scoped:

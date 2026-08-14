@@ -75,6 +75,27 @@ function toClientUploadError(err: multer.MulterError): MedusaError {
   }
 }
 
+// busboy raises this - a bare Error, not a MulterError - when a part's
+// headers cannot be parsed, which a NUL byte in the filename is enough to
+// cause (node_modules/busboy/lib/types/multipart.js). Being neither a
+// MulterError nor a MediaDecodeError, it fell through both narrow
+// conversions to an opaque 500 "unknown error occurred", for a request the
+// client malformed.
+//
+// Matched on the exact message, and ONLY that message, because the
+// alternative - treating any non-multer parse failure as a client error -
+// is precisely what the test below this file's other conversion exists to
+// prevent: Busboy's constructor also throws a bare Error ("Boundary not
+// found"), and that one is deliberately left as a 500 so a genuine server
+// fault can never be laundered into a false 400. If busboy renames this
+// string the effect is that the 500 comes back, which is the safe way for
+// this to break.
+const BUSBOY_MALFORMED_PART_HEADER = 'Malformed part header'
+
+function isMalformedPartHeader(err: unknown): err is Error {
+  return err instanceof Error && err.message === BUSBOY_MALFORMED_PART_HEADER
+}
+
 function uploadReviewMediaFiles(
   req: MedusaRequest,
   res: MedusaResponse,
@@ -90,7 +111,22 @@ function uploadReviewMediaFiles(
     // contract: only a MulterError is converted, everything else (a real
     // server fault) is forwarded exactly as thrown so it still surfaces as
     // a 500.
-    next(err instanceof multer.MulterError ? toClientUploadError(err) : err)
+    if (err instanceof multer.MulterError) {
+      next(toClientUploadError(err))
+      return
+    }
+
+    if (isMalformedPartHeader(err)) {
+      next(
+        new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          'The multipart request body is malformed and could not be parsed.'
+        )
+      )
+      return
+    }
+
+    next(err)
   })
 }
 

@@ -223,6 +223,31 @@ See [Roadmap](#roadmap).
   same origin as your admin dashboard. It also means a shopper's own
   filename (`mary-smith-home-address.jpg`) is never published in a URL, and
   that keys are not enumerable from a submission timestamp.
+- **What `Content-Type` you actually get back, precisely.** Because the
+  extension is server-chosen, so is the header — but on Medusa's default
+  local provider the header is emitted by core's `/static` handler, which
+  resolves extensions through `send` → `mime@1.6.0`, and that table predates
+  AVIF. So five of the six accepted formats are served as exactly the MIME
+  this plugin sniffed, and AVIF is served as `application/octet-stream`:
+
+  | Sniffed | Stored as | Served as |
+  |---|---|---|
+  | `image/jpeg` | `.jpg` | `image/jpeg` |
+  | `image/png` | `.png` | `image/png` |
+  | `image/webp` | `.webp` | `image/webp` |
+  | `image/avif` | `.avif` | **`application/octet-stream`** |
+  | `video/mp4` | `.mp4` | `video/mp4` |
+  | `video/webm` | `.webm` | `video/webm` |
+
+  The AVIF row is a correctness wrinkle, not a security one: the header is
+  still not attacker-chosen, and `application/octet-stream` is not a
+  sniffable type per the MIME Sniffing spec, so browsers download rather
+  than render it (an `<img>` tag renders AVIF regardless of the header, so
+  storefronts are unaffected in practice). If you serve media from S3/R2/a
+  CDN instead — which is recommended below — that provider uses the MIME
+  recorded on the object and the AVIF row becomes `image/avif` too. The
+  guarantee that holds for **all six**, on any provider, is that no accepted
+  upload is ever served under a `text/*` type.
 - **Serve user media from a separate origin in production.** This plugin
   chooses the filename and records the MIME, but it does not control the
   response headers core's `/static` handler emits — there is no
@@ -292,10 +317,13 @@ pass this check and be accepted and stored as `video/webm`. The consequence
 is a mislabelled video that may not play correctly.
 
 Be precise about what does and does not bound this. The `Content-Type`
-served back **is** one this plugin chooses, because the stored filename —
-and therefore the extension `express.static` derives that header from — is
-generated from the sniffed format, never from the upload (see the filename
-bullet above). What the allow-list does **not** give you is any guarantee
+served back is **never one an attacker controls**, because the stored
+filename — and therefore the extension `express.static` derives that header
+from — is generated from the sniffed format, never from the upload. It is
+not always the sniffed type either: on the default local provider AVIF
+comes back as `application/octet-stream`, for the reason and with the exact
+per-format table given in the uploads section above. What the allow-list
+does **not** give you is any guarantee
 about the bytes after the magic number: video is stored exactly as
 uploaded with no re-encode, so only the leading container bytes are
 constrained and everything after them is arbitrary attacker-supplied
