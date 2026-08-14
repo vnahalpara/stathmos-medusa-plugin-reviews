@@ -5,6 +5,7 @@ import { Review } from './models/review'
 import { ReviewSettings } from './models/review-settings'
 import { ReviewStats } from './models/review-stats'
 import { ReviewMedia } from './models/review-media'
+import { ReviewReply } from './models/review-reply'
 
 // The only two EntityManager methods this module needs for a raw
 // conditional UPDATE - narrowly typed locally rather than importing
@@ -21,6 +22,7 @@ class ReviewModuleService extends MedusaService({
   ReviewSettings,
   ReviewStats,
   ReviewMedia,
+  ReviewReply,
 }) {
   /**
    * Atomically claims not-yet-attached review_media rows for a review, via
