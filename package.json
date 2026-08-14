@@ -47,7 +47,7 @@
     "lint": "medusa lint",
     "typecheck": "tsc --noEmit",
     "test": "npm run test:integration",
-    "test:integration": "TEST_TYPE=integration:http NODE_OPTIONS=--experimental-vm-modules jest --silent=false --runInBand --forceExit",
+    "test:integration": "TEST_TYPE=integration:http NODE_OPTIONS=\"--experimental-vm-modules --max-old-space-size=8192\" jest --silent=false --runInBand --forceExit",
     "test:unit": "TEST_TYPE=unit NODE_OPTIONS=--experimental-vm-modules jest --silent --runInBand --forceExit",
     "changeset": "changeset",
     "version": "changeset version",
