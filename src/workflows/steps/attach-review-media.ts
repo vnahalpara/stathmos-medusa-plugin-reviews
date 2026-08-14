@@ -6,6 +6,26 @@ import { getReviewSettings } from '../../settings/get-review-settings'
 type Input = { review_id: string; media_ids: string[] }
 
 /**
+ * ONE error for both "no such media id" and "that media id is already
+ * attached to a review". They used to be distinguishable - a 404 "Unknown
+ * media" versus a 400 "Media is already attached to a review" - which is a
+ * clean existence oracle over the id space: anyone with a publishable key
+ * could probe whether a given `rmed_` id exists by reading the status code.
+ *
+ * That is immaterial against 80-bit ULIDs, but it costs nothing to close
+ * and the two cases are indistinguishable from the caller's side anyway:
+ * both mean "this id is not available for you to attach". Any future gate
+ * that refuses an id (an ownership check, an expiry) must reuse this, or it
+ * reopens the oracle from a new angle.
+ */
+function unavailableMediaError(): MedusaError {
+  return new MedusaError(
+    MedusaError.Types.NOT_FOUND,
+    'Unknown or unavailable media'
+  )
+}
+
+/**
  * Media is uploaded anonymously (Task 4) before the review that will own it
  * exists, so `media_ids` arriving here are bare ids with no proof of who
  * uploaded them.
@@ -75,7 +95,33 @@ export const attachReviewMediaStep = createStep(
     // every id is valid. uniqueIds is already deduped, so this comparison
     // is exact.
     if (rows.length !== uniqueIds.length) {
-      throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Unknown media')
+      throw unavailableMediaError()
+    }
+
+    // Both settings are re-checked here, not only in the upload step.
+    // Uploads live for the orphan TTL (24h by default), so a merchant who
+    // switches media off would otherwise keep receiving media on new
+    // reviews for a full day from ids uploaded before the switch - a
+    // merchant-facing toggle that does not actually toggle. This is the
+    // same reasoning that made max_media_per_review a per-review cap
+    // enforced here rather than a per-upload-call one.
+    //
+    // It runs before the atomic claim below, so a rejection here can never
+    // leave any of uniqueIds claimed.
+    const settings = await getReviewSettings(container)
+
+    if (!settings.allow_media) {
+      throw new MedusaError(
+        MedusaError.Types.NOT_ALLOWED,
+        'Media uploads are disabled'
+      )
+    }
+
+    if (!settings.allow_video && rows.some((row) => row.type === 'video')) {
+      throw new MedusaError(
+        MedusaError.Types.NOT_ALLOWED,
+        'Video uploads are disabled'
+      )
     }
 
     // max_media_per_review is a per-review cap, not a per-upload-call cap -
@@ -88,7 +134,6 @@ export const attachReviewMediaStep = createStep(
     // before the atomic claim below so a rejection here can never leave
     // any of uniqueIds claimed - nothing has touched the database for this
     // batch yet at this point in the step, so there is nothing to release.
-    const settings = await getReviewSettings(container)
     const alreadyAttached = await service.listReviewMedias({ review_id: input.review_id })
 
     if (alreadyAttached.length + uniqueIds.length > settings.max_media_per_review) {
@@ -132,10 +177,9 @@ export const attachReviewMediaStep = createStep(
         await service.updateReviewMedias(claimedIds.map((id) => ({ id, review_id: null })))
       }
 
-      throw new MedusaError(
-        MedusaError.Types.NOT_ALLOWED,
-        'Media is already attached to a review'
-      )
+      // Deliberately the same error the existence check raises - see
+      // unavailableMediaError().
+      throw unavailableMediaError()
     }
 
     // Every id in this batch is now exclusively claimed by this review -

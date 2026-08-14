@@ -238,6 +238,19 @@ See [Roadmap](#roadmap).
 - **Uploads never attached to a review are deleted automatically after 24
   hours** by an hourly sweep job, so abandoned review forms don't leak
   storage forever.
+- **Media settings are re-checked when a review is submitted, not only when
+  a file is uploaded.** Turning `allow_media` (or `allow_video`) off takes
+  effect immediately: media uploaded before the switch — which lives for up
+  to the 24-hour orphan TTL — is refused at `POST /store/reviews` too, so a
+  merchant who turns media off stops receiving it at once rather than a day
+  later.
+- **A `media_ids` entry that is unknown, or already attached to another
+  review, gets the same answer**: `404` with `"Unknown or unavailable
+  media"`. The two cases are deliberately indistinguishable so the endpoint
+  cannot be used to probe which media ids exist. Attaching media you did not
+  upload is not otherwise prevented in this phase — media ids are 80-bit
+  ULIDs and are not guessable, but there is no ownership binding during the
+  window between upload and attachment. Signed upload tokens are Phase 6.
 - **Rejecting a review does NOT remove its media from storage.** Read that
   literally. `POST /admin/reviews/:id/reject` and
   `POST /admin/reviews/batch/status` change the review's status and nothing
