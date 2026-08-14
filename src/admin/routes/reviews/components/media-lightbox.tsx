@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowLeftMini, ArrowRightMini, Trash, XMark } from '@medusajs/icons'
-import { IconButton, Text } from '@medusajs/ui'
+import { ArrowLeftMini, ArrowRightMini, EyeSlashMini, Trash, XMark } from '@medusajs/icons'
+import { Badge, IconButton, Text } from '@medusajs/ui'
 
 export type ReviewMediaItem = {
   id: string
@@ -12,6 +12,13 @@ export type ReviewMediaItem = {
   // so a future caller cannot "helpfully" start rendering it without first
   // reading why every value here is null. See ReviewMedia's model comment.
   thumbnail_url: string | null
+  // Set when a moderator has hidden this item from shoppers (it still
+  // exists and is still returned here - GET /admin/reviews/:id/media
+  // deliberately includes hidden media, see that route's own comment).
+  // Non-null means hidden; the drawer must mark this visibly, or a
+  // moderator looking at the image has no way to tell it's already
+  // hidden from the storefront.
+  hidden_at: string | null
 }
 
 type MediaLightboxProps = {
@@ -89,9 +96,16 @@ const MediaLightbox = ({ media, index, onOpenChange, onDeleteRequest, isDeleting
         onClick={(event) => event.stopPropagation()}
       >
         <div className="border-ui-border-base flex items-center justify-between border-b px-4 py-2">
-          <Text size="small" leading="compact" className="text-ui-fg-subtle">
-            {index + 1} / {media.length}
-          </Text>
+          <div className="flex items-center gap-x-2">
+            <Text size="small" leading="compact" className="text-ui-fg-subtle">
+              {index + 1} / {media.length}
+            </Text>
+            {current.hidden_at && (
+              <Badge color="grey" size="2xsmall" className="flex items-center gap-x-1">
+                <EyeSlashMini /> Hidden from shoppers
+              </Badge>
+            )}
+          </div>
           <div className="flex items-center gap-x-1">
             <IconButton
               size="small"

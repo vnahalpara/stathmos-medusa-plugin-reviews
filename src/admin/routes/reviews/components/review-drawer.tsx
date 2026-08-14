@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { PlaySolid, Trash } from '@medusajs/icons'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { EyeSlashMini, PlaySolid, Trash } from '@medusajs/icons'
 import { Badge, Button, Drawer, Heading, IconButton, Prompt, Text, Textarea, toast } from '@medusajs/ui'
 import { sdk } from '../../../lib/sdk'
 import { formatStars } from '../../../lib/format'
@@ -39,27 +39,36 @@ const DetailField = ({ label, value, mono = false }: { label: string; value: str
  * review records with no allow-list (see that route's own comment) -
  * already carries every field this drawer shows except the media itself.
  *
- * ## Why there is no `['admin-review', id]` network query to invalidate
+ * ## Why there is still no `['admin-review', id]` query for the review's OWN fields
  * Requirement: "invalidate both the drawer's own query and
- * ['admin-reviews']". There genuinely is no *network-backed* query the
- * drawer owns - see above, nothing exists to refetch it from. What plays
- * that role here is `liveReview`: local state seeded from the `review`
- * prop and overwritten with the exact response body of each mutation
- * (approve/reject/media-delete all return the field(s) that changed). That
- * is strictly fresher than an invalidate+refetch would be, since there is
- * no round trip and therefore nothing to race against. `['admin-reviews']`
- * IS a real query (review-table.tsx's own `useQuery`) and is invalidated
- * for real below, by the same key prefix that table uses.
+ * ['admin-reviews']". This applies to the media query below (a real,
+ * network-backed query - see "Media" below). It does NOT apply to the
+ * review's own content/status/etc: there is still no GET-by-id for a
+ * single review's core fields (only its media gained an endpoint this
+ * round), so nothing exists to refetch those from. What plays that role
+ * is `liveReview`: local state seeded from the `review` prop and
+ * overwritten with the exact response body of each mutation (approve/
+ * reject both return the field(s) that changed). That is strictly fresher
+ * than an invalidate+refetch would be, since there is no round trip and
+ * therefore nothing to race against. `['admin-reviews']` IS a real query
+ * (review-table.tsx's own `useQuery`) and is invalidated for real below,
+ * by the same key prefix that table uses.
  *
- * ## Media: media_count only, no media items
- * GET /admin/reviews returns `media_count` (Task 7) but never the media
- * rows themselves (id/url/type) - no admin route lists them. That means
- * this drawer cannot show real thumbnails or wire up per-item delete
- * against real data today; see task-9-report.md for the concrete gap and
- * the read route it would take to close it. `mediaItems` below is real
- * state (not a hardcoded `[]`) and MediaLightbox/the per-item delete
- * mutation are fully implemented against it, specifically so that closing
- * this gap later is "populate `mediaItems`", not a rewrite.
+ * ## Media: a genuine, separate query
+ * GET /admin/reviews returns `media_count` (Task 7) only, never the media
+ * rows themselves - closed by adding GET /admin/reviews/:id/media (see
+ * that route's own comment for why it deliberately includes media a
+ * moderator has already hidden). `mediaQuery` below is a real
+ * network-backed query, gated `enabled: review !== null` - the documented
+ * "modal-only data" exception to "queries load on mount unconditionally",
+ * since this data is meaningless with no review selected. Its own key
+ * (`['admin-review-media', id]`) is invalidated after a delete, same as
+ * `['admin-reviews']` is for the table.
+ *
+ * The lightbox and the media strip both mark hidden items visibly (a
+ * small "Hidden from shoppers" badge) rather than showing a hidden photo
+ * indistinguishably from a visible one - a moderator needs to know which
+ * is which before deciding whether to also un-hide or delete it.
  *
  * ## No cross-review state leaks (the Task 8 bug, one layer up)
  * Task 8 shipped a bug where `rowSelection` outlived a tab/search change
@@ -75,11 +84,24 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
   const queryClient = useQueryClient()
 
   const [liveReview, setLiveReview] = useState<AdminReview | null>(review)
-  const [mediaItems, setMediaItems] = useState<ReviewMediaItem[]>([])
   const [rejectPromptOpen, setRejectPromptOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
   const [mediaPendingDelete, setMediaPendingDelete] = useState<ReviewMediaItem | null>(null)
+
+  // Modal-only data - the documented exception to "queries load on mount
+  // unconditionally": this data is meaningless with no review selected,
+  // and gating it here (rather than always querying with a possibly-null
+  // id) avoids a request that can never succeed. Query-cache keying on
+  // `review?.id` already means switching reviews can never show A's media
+  // under B's id - each id gets its own cache entry - so this query needs
+  // no help from the reset effect below to avoid a cross-review leak.
+  const mediaQuery = useQuery({
+    queryKey: ['admin-review-media', review?.id],
+    queryFn: () => sdk.client.fetch<{ media: ReviewMediaItem[] }>(`/admin/reviews/${review!.id}/media`),
+    enabled: review !== null,
+  })
+  const mediaItems = mediaQuery.data?.media ?? []
 
   useEffect(() => {
     // Only resets when the review's id actually changes - not on a bare
@@ -93,12 +115,18 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
     // (id -> undefined) and any subsequent open (undefined -> id, or
     // id -> a different id) are both dependency changes, so this always
     // re-runs, and re-runs fully, before the drawer is visible again.
+    //
+    // mediaItems is NOT reset here - it isn't local state, it's derived
+    // from mediaQuery, which is already scoped per-review by its own
+    // query key (see the query above). lightboxIndex/mediaPendingDelete
+    // ARE reset: they're indices/references into whatever media array is
+    // currently rendered, and must not be reinterpreted against a
+    // different review's array after a switch.
     if (!review) {
       return
     }
 
     setLiveReview(review)
-    setMediaItems([])
     setRejectPromptOpen(false)
     setRejectReason('')
     setLightboxIndex(null)
@@ -160,7 +188,16 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
         method: 'DELETE',
       }),
     onSuccess: (_response, mediaId) => {
-      setMediaItems((prev) => prev.filter((item) => item.id !== mediaId))
+      // Instant local update (no flash of the just-deleted item while a
+      // refetch is in flight) AND a real invalidate, per the brief's "on
+      // any mutation, invalidate... the drawer's own query" - this one has
+      // an actual network-backed query to invalidate, unlike the review's
+      // own core fields (see this file's top comment).
+      queryClient.setQueryData<{ media: ReviewMediaItem[] }>(
+        ['admin-review-media', review?.id],
+        (prev) => (prev ? { media: prev.media.filter((item) => item.id !== mediaId) } : prev)
+      )
+      queryClient.invalidateQueries({ queryKey: ['admin-review-media', review?.id] })
       setLiveReview((prev) => (prev ? { ...prev, media_count: Math.max(0, prev.media_count - 1) } : prev))
       setMediaPendingDelete(null)
       invalidateTable()
@@ -262,15 +299,29 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
                     <Text size="small" leading="compact" className="text-ui-fg-subtle">
                       No media attached.
                     </Text>
-                  ) : mediaItems.length === 0 ? (
-                    // The admin API can only report a count, not the files
-                    // themselves - see this file's own doc comment above
-                    // ("Media: media_count only, no media items") and
-                    // task-9-report.md for the concrete backend gap.
+                  ) : mediaQuery.isLoading ? (
                     <Text size="small" leading="compact" className="text-ui-fg-subtle">
-                      {liveReview.media_count} file{liveReview.media_count === 1 ? '' : 's'} attached.
-                      Preview and per-file deletion require a media list, which the admin API does
-                      not currently expose for a single review.
+                      Loading media…
+                    </Text>
+                  ) : mediaQuery.isError ? (
+                    // A genuine error state, not "no media" - keeping these
+                    // visually distinct matters: an empty-looking strip that
+                    // might mean "nothing attached" or "failed to load" is
+                    // exactly the ambiguity a moderator shouldn't have to
+                    // guess at.
+                    <Text size="small" leading="compact" className="text-ui-fg-error">
+                      Failed to load media.{' '}
+                      <button
+                        type="button"
+                        className="underline"
+                        onClick={() => mediaQuery.refetch()}
+                      >
+                        Retry
+                      </button>
+                    </Text>
+                  ) : mediaItems.length === 0 ? (
+                    <Text size="small" leading="compact" className="text-ui-fg-subtle">
+                      No media attached.
                     </Text>
                   ) : (
                     <div className="flex flex-wrap gap-2">
@@ -282,13 +333,27 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
                             onClick={() => setLightboxIndex(index)}
                           >
                             {item.type === 'image' ? (
-                              <img src={item.url} alt="" className="h-full w-full object-cover" />
+                              <img
+                                src={item.url}
+                                alt=""
+                                className={`h-full w-full object-cover ${item.hidden_at ? 'opacity-40' : ''}`}
+                              />
                             ) : (
-                              <div className="bg-ui-bg-subtle flex h-full w-full items-center justify-center">
+                              <div
+                                className={`bg-ui-bg-subtle flex h-full w-full items-center justify-center ${item.hidden_at ? 'opacity-40' : ''}`}
+                              >
                                 <PlaySolid className="text-ui-fg-subtle" />
                               </div>
                             )}
                           </button>
+                          {item.hidden_at && (
+                            <div
+                              className="bg-ui-bg-base border-ui-border-base absolute bottom-0 left-0 flex items-center rounded-tr-md border-r border-t p-0.5"
+                              title="Hidden from shoppers"
+                            >
+                              <EyeSlashMini className="text-ui-fg-subtle" />
+                            </div>
+                          )}
                           <IconButton
                             size="2xsmall"
                             variant="transparent"
