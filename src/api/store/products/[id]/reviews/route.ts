@@ -27,6 +27,13 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   // database - never by fetching every review and filtering in JS. A JS
   // filter would still load pending/rejected content into memory, one
   // refactor away from being serialised into a public response.
+  //
+  // This filter decides which REVIEWS this route lists. It is no longer
+  // what protects their MEDIA: that rule lives in
+  // service.listVisibleReviewMedias() and is re-derived there from the
+  // reviews table, so removing or loosening this filter cannot leak a
+  // non-approved review's media (spec §6 - enforced in the service layer,
+  // not per-route).
   const filters: Record<string, unknown> = {
     product_id: req.params.id,
     status: 'approved',
@@ -46,6 +53,20 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     order: ORDER_BY[sort ?? 'newest'],
   })
 
+  // Media visibility is the service's rule, not this route's: one query
+  // keyed by the whole id set (never N+1), with approved-only and
+  // not-hidden both applied inside listVisibleReviewMedias(). Passing ids
+  // that are already approved is belt-and-braces, not the guarantee.
+  const media = await service.listVisibleReviewMedias(reviews.map((r) => r.id))
+
+  const mediaByReview = new Map<string, typeof media>()
+
+  for (const item of media) {
+    const list = mediaByReview.get(item.review_id!) ?? []
+    list.push(item)
+    mediaByReview.set(item.review_id!, list)
+  }
+
   res.json({
     // Field-by-field response, not the model: email and customer_id must
     // never reach a store response, and an explicit allow-list cannot leak
@@ -61,6 +82,14 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       is_verified_purchase: review.is_verified_purchase,
       helpful_count: review.helpful_count,
       created_at: review.created_at,
+      media: (mediaByReview.get(review.id) ?? [])
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map((m) => ({
+          id: m.id,
+          type: m.type,
+          url: m.url,
+          thumbnail_url: m.thumbnail_url,
+        })),
     })),
     count,
     limit: limit ?? 20,

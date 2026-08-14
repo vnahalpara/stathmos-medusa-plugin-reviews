@@ -8,6 +8,7 @@ import { checkVerifiedPurchaseStep } from './steps/check-verified-purchase'
 import { validateReviewSubmissionStep } from './steps/validate-review-submission'
 import { createReviewStep } from './steps/create-review'
 import { recomputeReviewStatsStep } from './steps/recompute-review-stats'
+import { attachReviewMediaStep } from './steps/attach-review-media'
 
 export type CreateReviewInput = {
   product_id: string
@@ -17,6 +18,7 @@ export type CreateReviewInput = {
   display_name?: string | null
   email?: string | null
   customer_id?: string | null
+  media_ids?: string[]
 }
 
 export const createReviewWorkflow = createWorkflow(
@@ -47,6 +49,13 @@ export const createReviewWorkflow = createWorkflow(
         content: data.input.content,
         status: data.validation.status,
         is_verified_purchase: data.isVerified,
+      }))
+    )
+
+    attachReviewMediaStep(
+      transform({ review, input }, (data) => ({
+        review_id: data.review.id,
+        media_ids: data.input.media_ids || [],
       }))
     )
 

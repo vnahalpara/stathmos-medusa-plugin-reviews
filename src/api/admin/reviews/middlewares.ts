@@ -15,7 +15,11 @@ export const UpdateReviewSettingsSchema = z
     allow_video: z.boolean().optional(),
     max_media_per_review: z.number().int().min(0).max(20).optional(),
     max_image_size_mb: z.number().int().min(1).max(50).optional(),
-    max_video_size_mb: z.number().int().min(1).max(500).optional(),
+    // Ceiling matches the multer `fileSize` limit on the store upload route
+    // (src/api/store/reviews/middlewares.ts) - it must not exceed that
+    // transport-layer bound, or a merchant could configure a cap multer
+    // would silently never let a file reach.
+    max_video_size_mb: z.number().int().min(1).max(100).optional(),
     allow_edit: z.boolean().optional(),
     one_review_per_customer: z.boolean().optional(),
     min_content_length: z.number().int().min(0).max(1000).optional(),

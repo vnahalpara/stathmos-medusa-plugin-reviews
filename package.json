@@ -68,6 +68,7 @@
     "@swc/jest": "^0.2.36",
     "@types/jest": "^29.5.12",
     "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.2.0",
     "@types/node": "^20.0.0",
     "@types/react": "^18.3.2",
     "@types/react-dom": "^18.2.25",
@@ -95,5 +96,9 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "npm@10.9.7"
+  "packageManager": "npm@10.9.7",
+  "dependencies": {
+    "multer": "^2.2.0",
+    "sharp": "^0.35.3"
+  }
 }
