@@ -1,8 +1,9 @@
 ---
-'@stathmos/medusa-plugin-reviews': major
+'@stathmos/medusa-plugin-reviews': minor
 ---
 
-**Breaking:** rejecting a review now permanently deletes its media.
+**Behaviour change, breaking for anyone running a pre-release build:**
+rejecting a review now permanently deletes its media.
 `POST /admin/reviews/:id/reject` and `POST /admin/reviews/batch/status`
 (target status `rejected`) delete every file and `review_media` row
 attached to a review the moment it is rejected — the stored file itself,
