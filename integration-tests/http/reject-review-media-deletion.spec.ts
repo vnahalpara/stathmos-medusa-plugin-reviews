@@ -197,6 +197,89 @@ medusaIntegrationTestRunner({
       expect(response.data.review.status).toEqual('rejected')
     })
 
+    /**
+     * Priority 4 from the code review: nothing in the original 7 tests
+     * pinned the per-item try/catch inside deleteRejectedReviewMediaStep's
+     * loop (delete-rejected-review-media.ts). Deleting that try/catch
+     * entirely - letting one item's exception abort the whole loop - made
+     * all 7 original tests pass anyway, because the outer catch in
+     * deleteMediaForRejectedReviews still swallowed the eventual rejection
+     * and kept the route from 500ing. That outer catch is real
+     * belt-and-suspenders, but it is the WRONG mechanism for batch
+     * isolation: it stops the request from failing, it does not make the
+     * loop keep going.
+     *
+     * This forces exactly one item's file-delete to fail - identified by
+     * file id, not by call order, so the assertion does not depend on
+     * `listReviewMedias`'s unspecified row ordering - and proves the loop
+     * still reaches every other item: another item on the SAME review, and
+     * every item belonging to a DIFFERENT review in the same batch.
+     */
+    it('one media item failing to delete does not stop the rest - same review and across a batch', async () => {
+      const container = getContainer()
+      const withTwoItems = await reviewWithMedia(container, 'prod_partial_fail_a', 2)
+      const otherReviewInBatch = await reviewWithMedia(container, 'prod_partial_fail_b', 1)
+
+      const failingFileId = withTwoItems.media[0].file_id
+
+      const fileService = container.resolve(Modules.FILE)
+      const originalDeleteFiles = fileService.deleteFiles.bind(fileService)
+
+      jest.spyOn(fileService, 'deleteFiles').mockImplementation(async (...args: unknown[]) => {
+        const ids = args[0] as string[]
+
+        if (ids.includes(failingFileId)) {
+          throw new Error('forced failure for one media item')
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (originalDeleteFiles as any)(...args)
+      })
+
+      const response = await api.post(
+        '/admin/reviews/batch/status',
+        { ids: [withTwoItems.review.id, otherReviewInBatch.review.id], status: 'rejected' },
+        adminHeaders
+      )
+
+      expect(response.status).toEqual(200)
+      expect(
+        response.data.reviews.every((r: { status: string }) => r.status === 'rejected')
+      ).toBe(true)
+
+      jest.restoreAllMocks()
+
+      const service = container.resolve(REVIEW_MODULE)
+
+      // The one item whose file-delete was forced to fail is the
+      // acceptable leftover: row and file both survive.
+      const survivor = await service.listReviewMedias({ id: withTwoItems.media[0].id })
+      expect(survivor).toHaveLength(1)
+      await expect(fileService.getAsBuffer(failingFileId)).resolves.toBeDefined()
+
+      // Load-bearing: the SECOND item on that same review must still have
+      // been deleted - the per-item catch must not have aborted the rest
+      // of this review's own loop iterations.
+      const sameReviewOtherItem = await service.listReviewMedias({
+        id: withTwoItems.media[1].id,
+      })
+      expect(sameReviewOtherItem).toHaveLength(0)
+      await expect(
+        fileService.getAsBuffer(withTwoItems.media[1].file_id)
+      ).rejects.toThrow()
+
+      // Load-bearing: the OTHER review in the same batch must have its
+      // media fully deleted too - one review's failure must not abort
+      // another review's cleanup within the same batch.
+      const otherReviewMedia = await service.listReviewMedias({
+        review_id: otherReviewInBatch.review.id,
+      })
+      expect(otherReviewMedia).toHaveLength(0)
+      await expect(
+        fileService.getAsBuffer(otherReviewInBatch.media[0].file_id)
+      ).rejects.toThrow()
+    })
+
     it('rejecting an already-rejected review does not error on missing media', async () => {
       const container = getContainer()
       const { review } = await reviewWithMedia(container, 'prod_reject_twice', 1)
