@@ -34,6 +34,36 @@ async function largeNoisyPngBuffer(): Promise<Buffer> {
 }
 
 /**
+ * A palette PNG that is comfortably UNDER a 1MB cap on arrival (~0.46MB)
+ * but re-encodes to just OVER it (~1.05MB), because a palette image handed
+ * back as full-colour RGB inflates. This is the M3 case measured in the
+ * review: 770,201 bytes in, 3,392,806 bytes stored, 4.41x.
+ *
+ * 4900x4900 is 24MP, deliberately just under the 25MP decode budget, so
+ * this exercises the size check rather than tripping the pixel bound.
+ */
+async function inflatingPaletteFixture(): Promise<Buffer> {
+  const width = 4900
+  const height = 4900
+  const colours = 128
+  const raw = Buffer.alloc(width * height * 3)
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 3
+      const c = ((x >> 1) ^ (y >> 1)) % colours
+      raw[i] = (c * 37) % 256
+      raw[i + 1] = (c * 91) % 256
+      raw[i + 2] = (c * 151) % 256
+    }
+  }
+
+  return await sharp(raw, { raw: { width, height, channels: 3 } })
+    .png({ palette: true, colours, compressionLevel: 9 })
+    .toBuffer()
+}
+
+/**
  * A real WebM header: the EBML magic plus a genuine DocType element
  * (ID 0x42 0x82, single-byte size form) whose value is "webm", which is
  * what sniffMime actually reads.
@@ -185,6 +215,41 @@ medusaIntegrationTestRunner({
             },
           }),
           'lied-about-size.png exceeds the 1MB limit'
+        )
+      })
+
+      /**
+       * max_image_size_mb was checked only on the bytes that arrived, but
+       * stripExif re-encodes afterwards and can produce a LARGER file - so
+       * a merchant setting 5MB could end up storing ~22MB. The setting is a
+       * promise about what gets stored, so the encoded length is checked
+       * against the same limit.
+       *
+       * This fixture arrives under the cap and only exceeds it after
+       * processing, so the arrival check cannot be what rejects it.
+       */
+      it('rejects an image that only exceeds max_image_size_mb after re-encoding', async () => {
+        const container = getContainer()
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { max_image_size_mb: 1 },
+        })
+
+        const buf = await inflatingPaletteFixture()
+
+        // Load-bearing: if this ever stopped being true the test would be
+        // proving the arrival check instead.
+        expect(buf.length).toBeLessThan(1024 * 1024)
+
+        await expectRejection(
+          uploadReviewMediaWorkflow(container).run({
+            input: {
+              files: [
+                { filename: 'inflates.png', content: buf.toString('base64'), size_bytes: buf.length },
+              ],
+            },
+          }),
+          'inflates.png is 2MB once processed, over the 1MB limit'
         )
       })
 

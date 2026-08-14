@@ -186,6 +186,51 @@ describe('stripExif', () => {
   })
 
   /**
+   * The re-encode can produce a bigger file than it was given. A palette
+   * PNG handed to sharp's defaults comes back as full-colour RGB - measured
+   * at up to 6.9x - which is how a merchant's 5MB cap turned into a ~22MB
+   * stored object. The encoders are pinned to bound that.
+   *
+   * Asserted against what the unpinned re-encode produces for the same
+   * input, rather than a hard-coded byte count, so this measures the pin
+   * rather than a libvips version.
+   */
+  it('pins the png encoder so the re-encode inflates less than sharp defaults would', async () => {
+    const palette = await sharp({
+      create: { width: 600, height: 600, channels: 3, background: '#3366cc' },
+    })
+      .png({ palette: true, compressionLevel: 9 })
+      .toBuffer()
+
+    const unpinned = await sharp(palette).rotate().toBuffer()
+    const cleaned = await stripExif(palette, 'image/png')
+
+    expect(cleaned.length).toBeLessThan(unpinned.length)
+
+    // Still lossless: the pin must not have quantised the image to buy the
+    // saving. `palette`/`effort` would have, which is why they are not set.
+    const before = await sharp(palette).raw().toBuffer()
+    const after = await sharp(cleaned).raw().toBuffer()
+    expect(after.equals(before)).toBe(true)
+  })
+
+  it('pins an encoder for every accepted image format', async () => {
+    // sharp reports AVIF as "heif": AVIF is an HEIF-container codec, and
+    // metadata() names the container.
+    const REPORTED_AS: Record<string, string> = { avif: 'heif' }
+
+    for (const [mime, format] of IMAGE_FORMATS) {
+      const cleaned = await stripExif(await exifBearing(format), mime)
+      const meta = await sharp(cleaned).metadata()
+
+      // Round-trips to the same format it came in as - the pinned encoder
+      // for that mime ran, rather than sharp's format-inheriting default.
+      // A missing entry in ENCODE_AS throws instead of reaching here.
+      expect(meta.format).toBe(REPORTED_AS[format] ?? format)
+    }
+  })
+
+  /**
    * A file with correct magic bytes and garbage behind them passes the
    * sniffer and fails in libvips. It must arrive at the caller as a
    * MediaDecodeError so the upload step can report it as a 400 rather than

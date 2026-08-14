@@ -36,6 +36,45 @@ export class MediaDecodeError extends Error {
 }
 
 /**
+ * The output encoding is a decision THIS code makes, per format, rather
+ * than whatever sharp's defaults happen to be in the installed version.
+ *
+ * That matters because `max_image_size_mb` is checked on the bytes that
+ * arrive, and the re-encode below can produce a bigger file than it was
+ * given: a palette PNG handed to sharp's defaults comes back as full-colour
+ * RGB, measured here at up to 6.9x its original size. A merchant setting a
+ * 5MB cap could end up with a ~22MB object in storage.
+ *
+ * Choices, and what was rejected:
+ *
+ * - PNG `compressionLevel: 9` (default is 6). Lossless, ~6ms on a 1.4MP
+ *   image, and it roughly halves the inflation (measured 6.89x -> 3.04x on
+ *   the pathological palette input).
+ * - PNG `palette`/`effort` are deliberately NOT set. They would collapse
+ *   that case to 1.00x, but `effort` implies `palette: true`, which
+ *   quantises to 256 colours - measured on a photographic PNG it produced
+ *   a file 0.33x the original because it had thrown pixel data away, and
+ *   it cost 2940ms against 6ms. Silently degrading every uploaded photo to
+ *   256 colours is a far worse outcome than the inflation it fixes.
+ * - JPEG `mozjpeg` is NOT used: smaller output, but 255ms against 14ms on
+ *   a 1.4MP image, which spends the entire CPU budget MAX_IMAGE_PIXELS
+ *   exists to protect.
+ * - JPEG/WebP/AVIF quality are pinned at sharp's current defaults. The
+ *   value is not the number, it is that the number is written down here
+ *   and cannot change under us when sharp does.
+ *
+ * Pinning narrows inflation; it cannot eliminate it losslessly. The caller
+ * re-checks the encoded length against the merchant's limit, which is what
+ * actually bounds the stored object - see upload-review-media-files.ts.
+ */
+const ENCODE_AS: Record<string, (pipeline: sharp.Sharp) => sharp.Sharp> = {
+  'image/jpeg': (pipeline) => pipeline.jpeg({ quality: 80 }),
+  'image/png': (pipeline) => pipeline.png({ compressionLevel: 9 }),
+  'image/webp': (pipeline) => pipeline.webp({ quality: 80 }),
+  'image/avif': (pipeline) => pipeline.avif({ quality: 50 }),
+}
+
+/**
  * Re-encodes images to drop metadata. Phone photos carry GPS coordinates in
  * EXIF, so publishing them verbatim next to a review would expose where the
  * reviewer lives.
@@ -84,13 +123,24 @@ export async function stripExif(buffer: Buffer, mime: string): Promise<Buffer> {
     )
   }
 
+  const encode = ENCODE_AS[mime]
+
+  if (!encode) {
+    // Unreachable: mediaTypeFor() has already rejected anything outside the
+    // four accepted image mimes. Fails loudly rather than falling back to
+    // sharp's defaults, so adding a format to the sniffer without adding an
+    // encoder here cannot silently reintroduce the inflation this map
+    // exists to bound.
+    throw new MediaDecodeError(`No encoder is configured for ${mime}.`)
+  }
+
   try {
     // sharp drops all metadata unless withMetadata() is called, so a plain
     // re-encode is the strip. limitInputPixels is repeated here as the
     // backstop for a header that understates the real image.
-    return await sharp(buffer, { limitInputPixels: MAX_IMAGE_PIXELS })
-      .rotate()
-      .toBuffer()
+    return await encode(
+      sharp(buffer, { limitInputPixels: MAX_IMAGE_PIXELS }).rotate()
+    ).toBuffer()
   } catch (error) {
     throw new MediaDecodeError(
       `Image could not be processed: ${(error as Error).message}`

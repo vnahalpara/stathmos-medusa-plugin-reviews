@@ -210,6 +210,23 @@ export const uploadReviewMediaFilesStep = createStep(
           : error
       }
 
+      // The same limit, applied a second time to the bytes that will
+      // actually be stored. The check above bounds what ARRIVED;
+      // max_image_size_mb is a promise about what the merchant ends up
+      // paying to store, and stripExif re-encodes in between. Its encoders
+      // are pinned precisely so this rarely fires (see strip-exif.ts), but
+      // a lossless re-encode cannot be guaranteed never to inflate, and a
+      // 5MB cap silently producing a 22MB object is the failure this
+      // closes. Video is untouched by stripExif, so for video this is the
+      // same number checked twice - harmless, and it keeps the guarantee
+      // uniform rather than format-conditional.
+      if (content.length > limitMb * 1024 * 1024) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          `${file.filename} is ${Math.ceil(content.length / (1024 * 1024))}MB once processed, over the ${limitMb}MB limit. Try a smaller or more compressed image.`
+        )
+      }
+
       prepared.push({
         storage_filename: storageFilename(mime),
         mime,
