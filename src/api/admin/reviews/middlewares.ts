@@ -46,6 +46,14 @@ export const BatchStatusSchema = z
 
 export type BatchStatusSchema = z.infer<typeof BatchStatusSchema>
 
+export const ReplyToReviewSchema = z
+  .object({
+    content: z.string().min(1).max(5000),
+  })
+  .strict()
+
+export type ReplyToReviewInput = z.infer<typeof ReplyToReviewSchema>
+
 const toInt = (val: unknown) => (typeof val === 'string' ? parseInt(val, 10) : val)
 
 export const ListAdminReviewsSchema = z
@@ -80,5 +88,10 @@ export const adminReviewMiddlewares: MiddlewareRoute[] = [
     matcher: '/admin/reviews/batch/status',
     method: 'POST',
     middlewares: [validateAndTransformBody(BatchStatusSchema)],
+  },
+  {
+    matcher: '/admin/reviews/:id/reply',
+    method: 'POST',
+    middlewares: [validateAndTransformBody(ReplyToReviewSchema)],
   },
 ]
