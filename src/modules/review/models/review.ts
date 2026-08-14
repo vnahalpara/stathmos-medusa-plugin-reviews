@@ -6,11 +6,17 @@ export const Review = model
     product_id: model.text(),
     customer_id: model.text().nullable(),
     order_id: model.text().nullable(),
-    display_name: model.text(),
-    email: model.text().nullable(),
+    // `.searchable()` is metadata read by MikroORM's generated free-text
+    // filter (@medusajs/utils's mikroOrmFreeTextSearchFilterOptionsFactory)
+    // - it adds no column and needs no migration. It is what lets
+    // `listAndCountReviews({ q: '...' }, ...)` build a case-insensitive
+    // `ILIKE` OR across exactly these four columns. See GET /admin/reviews
+    // in src/api/admin/reviews/route.ts, the only caller that passes `q`.
+    display_name: model.text().searchable(),
+    email: model.text().searchable().nullable(),
     rating: model.number(),
-    title: model.text().nullable(),
-    content: model.text(),
+    title: model.text().searchable().nullable(),
+    content: model.text().searchable(),
     status: model
       .enum(['pending', 'approved', 'rejected'])
       .default('pending'),

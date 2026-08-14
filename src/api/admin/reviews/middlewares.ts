@@ -61,6 +61,13 @@ export const ListAdminReviewsSchema = z
     status: z.enum(['pending', 'approved', 'rejected']).optional(),
     product_id: z.string().optional(),
     rating: z.preprocess(toInt, z.number().int().min(1).max(5).optional()),
+    // Free-text search across display_name/email/title/content - see the
+    // `.searchable()` markers on those columns in the review model and
+    // GET's use of `filters.q` below. Trimmed so whitespace-only input
+    // behaves as "no search" (falsy, skipped) rather than a 400; capped at
+    // a sane length since this only ever needs to hold a search phrase,
+    // not an arbitrary payload.
+    q: z.string().trim().max(200).optional(),
     limit: z.preprocess(toInt, z.number().int().min(1).max(100).optional()),
     offset: z.preprocess(toInt, z.number().int().min(0).optional()),
   })

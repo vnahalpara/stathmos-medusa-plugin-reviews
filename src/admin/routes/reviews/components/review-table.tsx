@@ -178,33 +178,16 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
         query: {
           status: filters.status === 'all' ? undefined : filters.status,
           product_id: filters.product_id,
+          q: search || undefined,
           limit,
           offset,
         },
       }),
-    queryKey: ['admin-reviews', filters.status, filters.product_id, limit, offset],
+    queryKey: ['admin-reviews', filters.status, filters.product_id, search, limit, offset],
     placeholderData: keepPreviousData,
   })
 
   const reviews = data?.reviews ?? []
-
-  // GET /admin/reviews has no free-text search parameter - its Zod schema
-  // (ListAdminReviewsSchema) is `.strict()` and only accepts
-  // status/product_id/rating/limit/offset, so sending an unsupported `q`
-  // param would make the backend reject every request with a 400. Search
-  // is therefore applied client-side, over the already-fetched page only
-  // (a known limitation - it will not find a match on a different page).
-  const visibleReviews = useMemo(() => {
-    const term = search.trim().toLowerCase()
-    if (!term) {
-      return reviews
-    }
-    return reviews.filter((review) =>
-      [review.display_name, review.email, review.title, review.content]
-        .filter((value): value is string => Boolean(value))
-        .some((value) => value.toLowerCase().includes(term))
-    )
-  }, [reviews, search])
 
   const columns = useColumns()
 
@@ -216,8 +199,20 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
     setPagination((prev) => ({ ...prev, pageIndex: 0 }))
   }
 
+  const handleSearchChange = (value: string) => {
+    setSearch(value)
+    // Same reasoning as the tab reset above: a stale `pageIndex` from a
+    // wider result set must not carry over into a narrower search result.
+    // Belt-and-suspenders with useDataTable's own `autoResetPageIndex`
+    // (default true, left enabled here) which already does this on a
+    // *debounced* search change - verified by reading @medusajs/ui's
+    // use-data-table.js rather than assumed, since this repo has no
+    // component-rendering test harness to check it at runtime.
+    setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+  }
+
   const table = useDataTable({
-    data: visibleReviews,
+    data: reviews,
     columns,
     getRowId: (row) => row.id,
     rowCount: data?.count ?? 0,
@@ -228,7 +223,7 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
     },
     search: {
       state: search,
-      onSearchChange: setSearch,
+      onSearchChange: handleSearchChange,
     },
     pagination: {
       state: pagination,
@@ -258,7 +253,7 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
       </div>
       <DataTable instance={table}>
         <DataTable.Toolbar className="px-6 py-4">
-          <DataTable.Search placeholder="Search this page..." />
+          <DataTable.Search placeholder="Search name, email, title or content..." />
         </DataTable.Toolbar>
         <DataTable.Table />
         <DataTable.Pagination />
