@@ -61,6 +61,7 @@
     "@medusajs/eslint-plugin": "2.18.0",
     "@medusajs/framework": "2.18.0",
     "@medusajs/icons": "2.18.0",
+    "@medusajs/js-sdk": "2.18.0",
     "@medusajs/medusa": "2.18.0",
     "@medusajs/test-utils": "2.18.0",
     "@medusajs/ui": "4.2.0",
@@ -89,6 +90,7 @@
     "@medusajs/cli": "^2.18.0",
     "@medusajs/framework": "^2.18.0",
     "@medusajs/icons": "^2.18.0",
+    "@medusajs/js-sdk": "^2.18.0",
     "@medusajs/medusa": "^2.18.0",
     "@medusajs/test-utils": "^2.18.0",
     "@medusajs/ui": "^4.2.0"
