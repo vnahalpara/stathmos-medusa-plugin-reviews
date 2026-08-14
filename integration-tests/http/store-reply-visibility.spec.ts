@@ -43,30 +43,60 @@ medusaIntegrationTestRunner({
       expect(response.data.reviews[0].reply.created_at).toBeDefined()
     })
 
-    it('hides the reply of a pending review', async () => {
+    it('returns only the approved review\'s reply when a pending review shares the product', async () => {
       const container = getContainer()
       const service = container.resolve(REVIEW_MODULE)
       await createAdminUser(container)
 
-      const review = await service.createReviews({
-        product_id: 'prod_reply_pending',
+      // Two reviews on ONE product: one approved, one pending, each with
+      // its own reply.
+      //
+      // The single-pending-review version of this test proved nothing. A
+      // pending review is already excluded from this route's review list
+      // for reasons that have nothing to do with reply filtering, so its
+      // reply could never have appeared regardless - the test passed even
+      // with reply filtering removed entirely. Keeping an approved review
+      // in the response is what gives the assertion something to bite on:
+      // the response is non-empty, so "the pending reply is absent" is a
+      // real claim about reply scoping rather than a restatement of review
+      // scoping.
+      //
+      // Specifically, this catches replies being attached by product
+      // instead of per review - a plausible bug in the id->reply Map
+      // lookup that the previous shape could not see.
+      const approved = await service.createReviews({
+        product_id: 'prod_reply_mixed',
+        display_name: 'Ann',
+        rating: 5,
+        content: 'x'.repeat(20),
+      })
+      const pending = await service.createReviews({
+        product_id: 'prod_reply_mixed',
         display_name: 'Bea',
         rating: 4,
         content: 'y'.repeat(20),
       })
 
-      // Left pending - never moderated - so the review itself is not even
-      // listed by the store route. A reply is still posted, to prove its
-      // content cannot leak some other way (e.g. via a later route that
-      // fetches replies without also filtering the review list).
-      await api.post(`/admin/reviews/${review.id}/reply`, { content: 'Thanks!' }, adminHeaders)
+      await api.post(`/admin/reviews/${approved.id}/approve`, {}, adminHeaders)
 
-      const response = await api.get('/store/products/prod_reply_pending/reviews', {
+      await api.post(
+        `/admin/reviews/${approved.id}/reply`,
+        { content: 'Visible reply' },
+        adminHeaders
+      )
+      await api.post(
+        `/admin/reviews/${pending.id}/reply`,
+        { content: 'Hidden reply' },
+        adminHeaders
+      )
+
+      const response = await api.get('/store/products/prod_reply_mixed/reviews', {
         headers: await getPublishableKeyHeaders(container),
       })
 
-      expect(response.data.reviews).toHaveLength(0)
-      expect(JSON.stringify(response.data)).not.toContain('Thanks!')
+      expect(response.data.reviews).toHaveLength(1)
+      expect(response.data.reviews[0].reply.content).toEqual('Visible reply')
+      expect(JSON.stringify(response.data)).not.toContain('Hidden reply')
     })
 
     it('never exposes replied_by on a store route', async () => {

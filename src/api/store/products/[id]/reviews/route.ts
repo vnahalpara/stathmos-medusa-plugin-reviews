@@ -77,9 +77,15 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
   // Fetched once per request, not per review: the store's name is the
   // same for every reply in this response.
+  // Falls back to a literal rather than null so `author` is always a
+  // string. A storefront that renders the field without a null guard
+  // would print "null" next to the merchant's reply - and the zero-store
+  // case that produces it is essentially unreachable, since Store is a
+  // required core module, so the guard would never be exercised in
+  // development and would fail in the one situation nobody tested.
   const storeModule = req.scope.resolve(Modules.STORE)
   const [store] = await storeModule.listStores({}, { take: 1 })
-  const author = store?.name ?? null
+  const author = store?.name ?? 'Store'
 
   res.json({
     // Field-by-field response, not the model: email and customer_id must
