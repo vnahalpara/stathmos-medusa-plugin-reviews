@@ -179,6 +179,86 @@ medusaIntegrationTestRunner({
       })
     })
 
+    describe('GET /admin/reviews/:id/reply', () => {
+      let reviewId: string
+
+      beforeEach(async () => {
+        await createAdminUser(getContainer())
+
+        const service = getContainer().resolve(REVIEW_MODULE)
+        const review = await service.createReviews({
+          product_id: 'prod_reply_read',
+          display_name: 'E',
+          rating: 5,
+          content: 'v'.repeat(10),
+        })
+        reviewId = review.id
+      })
+
+      it('reports no reply as `{ reply: null }` with a 200, not a 404', async () => {
+        const response = await api.get(`/admin/reviews/${reviewId}/reply`, adminHeaders)
+        expect(response.status).toEqual(200)
+        expect(response.data).toEqual({ reply: null })
+      })
+
+      /**
+       * The decoy this project's standing instruction calls for (see
+       * progress.md's "pattern worth carrying into the remaining tasks"):
+       * a single-review test would pass even with the `review_id` filter
+       * dropped entirely - `listReviewReplies({})` would still find A
+       * REPLY and this test would never notice it was the wrong one. A
+       * second review with its own reply proves the filter is real.
+       */
+      it("returns only the requested review's own reply, not another review's", async () => {
+        const service = getContainer().resolve(REVIEW_MODULE)
+        const decoy = await service.createReviews({
+          product_id: 'prod_reply_read_decoy',
+          display_name: 'Decoy',
+          rating: 3,
+          content: 'decoy content here',
+        })
+
+        // The DECOY's reply is written first, deliberately. An unfiltered
+        // `listReviewReplies({}, { take: 1 })` returns whichever row comes
+        // back first, so writing the target's reply first would make this
+        // test pass against a dropped `review_id` filter purely by luck of
+        // insertion order - which it did, until this line was flipped.
+        // Seeding the decoy first means an unfiltered read returns the
+        // decoy and the assertions below fail loudly.
+        await api.post(`/admin/reviews/${decoy.id}/reply`, { content: 'Decoy reply' }, adminHeaders)
+        await api.post(`/admin/reviews/${reviewId}/reply`, { content: 'Target reply' }, adminHeaders)
+
+        const response = await api.get(`/admin/reviews/${reviewId}/reply`, adminHeaders)
+
+        expect(response.status).toEqual(200)
+        expect(response.data.reply.review_id).toEqual(reviewId)
+        expect(response.data.reply.content).toEqual('Target reply')
+      })
+
+      it('never returns replied_by', async () => {
+        await api.post(`/admin/reviews/${reviewId}/reply`, { content: 'Thanks!' }, adminHeaders)
+
+        const response = await api.get(`/admin/reviews/${reviewId}/reply`, adminHeaders)
+
+        // Exact-shape match, not a partial one: if `replied_by` were
+        // present this would fail on the extra key alone, not just on a
+        // value mismatch - matching store/products/[id]/reviews/route.ts's
+        // own convention of asserting the whole allow-listed shape.
+        expect(response.data.reply).toEqual({
+          id: expect.any(String),
+          review_id: reviewId,
+          content: 'Thanks!',
+          created_at: expect.any(String),
+          updated_at: expect.any(String),
+        })
+      })
+
+      it('requires authentication', async () => {
+        const err = await api.get(`/admin/reviews/${reviewId}/reply`).catch((e) => e.response)
+        expect(err.status).toEqual(401)
+      })
+    })
+
     describe('DELETE /admin/reviews/:id/reply', () => {
       let reviewId: string
 
