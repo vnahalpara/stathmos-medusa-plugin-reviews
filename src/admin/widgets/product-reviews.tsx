@@ -109,39 +109,61 @@ const ProductReviewsWidget = ({ data: product }: DetailWidgetProps<HttpTypes.Adm
         </div>
       ) : (
         <>
-          <div className="flex flex-col gap-y-3 px-6 py-4">
-            <div className="flex items-center gap-x-2">
-              <Text size="small" leading="compact" weight="plus">
-                {formatStars(average)}
-              </Text>
-              <Text size="small" leading="compact" className="text-ui-fg-subtle">
-                {average.toFixed(1)} average · {approvedCount} approved review
-                {approvedCount === 1 ? '' : 's'}
-              </Text>
-            </div>
-            <div className="flex flex-col gap-y-1">
-              {BREAKDOWN_ROWS.map((rating) => {
-                const count = stats?.breakdown[rating] ?? 0
-                const pct = approvedCount > 0 ? Math.round((count / approvedCount) * 100) : 0
-                return (
-                  <div key={rating} className="flex items-center gap-x-2">
-                    <Text size="small" leading="compact" className="text-ui-fg-subtle w-3 text-right">
-                      {rating}
-                    </Text>
-                    <div className="bg-ui-bg-subtle h-1.5 flex-1 overflow-hidden rounded-full">
-                      <div
-                        className="bg-ui-tag-orange-icon h-full rounded-full"
-                        style={{ width: `${pct}%` }}
-                      />
+          {approvedCount > 0 ? (
+            <div className="flex flex-col gap-y-3 px-6 py-4">
+              <div className="flex items-center gap-x-2">
+                <Text size="small" leading="compact" weight="plus">
+                  {formatStars(average)}
+                </Text>
+                <Text size="small" leading="compact" className="text-ui-fg-subtle">
+                  {average.toFixed(1)} average · {approvedCount} approved review
+                  {approvedCount === 1 ? '' : 's'}
+                </Text>
+              </div>
+              <div className="flex flex-col gap-y-1">
+                {BREAKDOWN_ROWS.map((rating) => {
+                  const count = stats?.breakdown[rating] ?? 0
+                  const pct = Math.round((count / approvedCount) * 100)
+                  return (
+                    <div key={rating} className="flex items-center gap-x-2">
+                      <Text
+                        size="small"
+                        leading="compact"
+                        className="text-ui-fg-subtle w-3 text-right"
+                      >
+                        {rating}
+                      </Text>
+                      <div className="bg-ui-bg-subtle h-1.5 flex-1 overflow-hidden rounded-full">
+                        <div
+                          className="bg-ui-tag-orange-icon h-full rounded-full"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <Text
+                        size="small"
+                        leading="compact"
+                        className="text-ui-fg-subtle w-6 text-right"
+                      >
+                        {count}
+                      </Text>
                     </div>
-                    <Text size="small" leading="compact" className="text-ui-fg-subtle w-6 text-right">
-                      {count}
-                    </Text>
-                  </div>
-                )
-              })}
+                  )
+                })}
+              </div>
             </div>
-          </div>
+          ) : (
+            // No fabricated "0.0 average" / all-empty breakdown bars here -
+            // that reads as a broken widget, not an accurate one,
+            // especially right above a list that may show several
+            // pending/rejected reviews. Say plainly why there's no rating
+            // summary instead.
+            <div className="px-6 py-4">
+              <Text size="small" leading="compact" className="text-ui-fg-subtle">
+                No approved reviews yet - the rating summary only counts approved reviews.
+                See recent activity below.
+              </Text>
+            </div>
+          )}
 
           <div className="flex flex-col gap-y-4 px-6 py-4">
             <Text size="small" leading="compact" weight="plus">

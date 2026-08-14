@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import {
@@ -60,18 +60,32 @@ type ReviewStatusTab = AdminReviewStatus | 'all'
 
 /**
  * Kept as an object (rather than several independent `useState` calls) so
- * that reading a `product_id` query param from the URL on mount - the
- * product widget (Task 11) links here via `/app/reviews?product_id=<id>` -
- * is a small addition to this shape (`product_id` initialised from
- * `useSearchParams()` below) rather than a rewrite of the filter state.
- * `product_id` lives only in this state after the initial read: tab
- * switches and searches both preserve it (see `handleTabChange` and
- * `handleSearchChange`, which never touch it), and it is not written back
- * to the URL on every filter change - only the initial mount reads the URL,
- * and `handleClearProductFilter` is the one place that also updates it, so
- * a stale query string left over from a followed link doesn't silently
- * reapply the filter after the merchant has explicitly cleared it and then
- * refreshed the page.
+ * that reading a `product_id` query param from the URL - the product
+ * widget (Task 11) links here via `/app/reviews?product_id=<id>` - is a
+ * small addition to this shape rather than a rewrite of the filter state.
+ *
+ * `product_id` is kept in sync with `searchParams` for the lifetime of
+ * this mounted table, not just at mount - see the `useEffect` keyed on
+ * `searchParams` below. A mount-only read is enough for a genuine
+ * cross-route navigation (product page -> this route, which remounts the
+ * component), but this page's own permanent sidebar nav entry
+ * (`defineRouteConfig({ label: 'Reviews' })` in `page.tsx`) is a
+ * same-route navigation when clicked from here: it only changes
+ * `location.search`, which React Router does not remount for. Without the
+ * effect, `filters.product_id` would stay pinned to whatever it was at
+ * mount, and the URL (now unfiltered) would silently disagree with the
+ * table (still filtered) - a merchant clicking their own "Reviews" nav
+ * item expecting the full queue would keep seeing one product's reviews
+ * without any error or obvious indication why, beyond the "Filtered to
+ * product" banner they may not notice.
+ *
+ * Tab switches and searches both still preserve `product_id` unchanged
+ * (see `handleTabChange` and `handleSearchChange`, neither of which
+ * touches it), and `handleClearProductFilter` is the one place that also
+ * writes the URL (removing the param) rather than just this state - the
+ * sync effect below then reads that same removal back and settles on
+ * `undefined` without looping, since the effect never itself calls
+ * `setSearchParams`.
  */
 type ReviewTableFilters = {
   status: ReviewStatusTab
@@ -194,9 +208,11 @@ type ReviewTableProps = {
 
 const ReviewTable = ({ onSelect }: ReviewTableProps) => {
   const [searchParams, setSearchParams] = useSearchParams()
-  // Read once, from the URL present at mount - see the `ReviewTableFilters`
-  // doc comment above for why this table doesn't keep syncing `product_id`
-  // back and forth with the URL afterward.
+  // Seeds the very first render from the URL already present at mount, so
+  // the initial fetch (which fires before any effect can run) is filtered
+  // correctly from the start rather than flashing an unfiltered page first.
+  // The `useEffect` below is what keeps this correct on every render after
+  // that - see the `ReviewTableFilters` doc comment above.
   const [filters, setFilters] = useState<ReviewTableFilters>(() => ({
     status: 'pending',
     product_id: searchParams.get('product_id') ?? undefined,
@@ -209,6 +225,35 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
   })
   const [rejectPromptOpen, setRejectPromptOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
+
+  const urlProductId = searchParams.get('product_id') ?? undefined
+
+  // Keeps `filters.product_id` synced to the URL for the table's whole
+  // mounted lifetime, not just at mount - see the `ReviewTableFilters` doc
+  // comment for why a mount-only read isn't enough (the sidebar's own
+  // "Reviews" nav link is a same-route, search-only navigation that a
+  // lazy `useState` initializer would never see).
+  //
+  // Keyed on the derived string `urlProductId`, not the `searchParams`
+  // object itself, so this only fires when the value that matters
+  // actually changes - including the no-op case right after
+  // `handleClearProductFilter` writes the same `undefined` this effect
+  // would also compute, which is why this can't loop against that
+  // handler: this effect only ever reads `searchParams`, never writes it.
+  useEffect(() => {
+    setFilters((prev) =>
+      prev.product_id === urlProductId ? prev : { ...prev, product_id: urlProductId }
+    )
+    // Same reasoning as `handleTabChange`/`handleSearchChange`: a page
+    // index or selection scoped to the previous product filter is
+    // meaningless once the filter changes (including to/from "no
+    // filter"). `handleClearProductFilter` already does this reset
+    // itself for its own trigger, but this effect is the thing that must
+    // guarantee it for every OTHER way `product_id` can change - a
+    // followed link, browser back/forward, or a manually edited URL.
+    setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+    setRowSelection({})
+  }, [urlProductId])
 
   const queryClient = useQueryClient()
 
