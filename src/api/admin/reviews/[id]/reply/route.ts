@@ -1,5 +1,6 @@
 import { AuthenticatedMedusaRequest, MedusaResponse } from '@medusajs/framework/http'
 import { replyToReviewWorkflow } from '../../../../../workflows/reply-to-review'
+import { deleteReviewReplyWorkflow } from '../../../../../workflows/delete-review-reply'
 import { ReplyToReviewInput } from '../../middlewares'
 
 // No explicit auth middleware here - Medusa core auto-protects every
@@ -25,4 +26,16 @@ export async function POST(
       updated_at: result.reply.updated_at,
     },
   })
+}
+
+// No explicit auth middleware here either, same reasoning as POST above.
+// No body, so no Zod schema and no middlewares.ts entry - see
+// src/api/admin/reviews/media/[id]/route.ts for the existing DELETE
+// precedent this follows, including its response shape.
+export async function DELETE(req: AuthenticatedMedusaRequest, res: MedusaResponse) {
+  const { result } = await deleteReviewReplyWorkflow(req.scope).run({
+    input: { review_id: req.params.id },
+  })
+
+  res.json({ id: result.id, object: 'review_reply', deleted: true })
 }

@@ -178,5 +178,88 @@ medusaIntegrationTestRunner({
         expect(err.status).toEqual(401)
       })
     })
+
+    describe('DELETE /admin/reviews/:id/reply', () => {
+      let reviewId: string
+
+      beforeEach(async () => {
+        await createAdminUser(getContainer())
+
+        const service = getContainer().resolve(REVIEW_MODULE)
+        const review = await service.createReviews({
+          product_id: 'prod_reply_delete',
+          display_name: 'D',
+          rating: 5,
+          content: 'w'.repeat(10),
+        })
+        reviewId = review.id
+      })
+
+      afterEach(() => {
+        jest.restoreAllMocks()
+      })
+
+      it('deletes a reply', async () => {
+        await api.post(`/admin/reviews/${reviewId}/reply`, { content: 'Thanks!' }, adminHeaders)
+
+        const response = await api.delete(`/admin/reviews/${reviewId}/reply`, adminHeaders)
+        expect(response.status).toEqual(200)
+        expect(response.data).toEqual({ id: expect.any(String), object: 'review_reply', deleted: true })
+
+        const service = getContainer().resolve(REVIEW_MODULE)
+        const remaining = await service.listReviewReplies({ review_id: reviewId })
+        expect(remaining).toHaveLength(0)
+      })
+
+      it('hard-deletes the row, not just soft-deletes it, freeing the review_id for a new reply', async () => {
+        await api.post(`/admin/reviews/${reviewId}/reply`, { content: 'Thanks!' }, adminHeaders)
+        await api.delete(`/admin/reviews/${reviewId}/reply`, adminHeaders)
+
+        // A merchant should be able to post a fresh reply right after
+        // deleting the old one. If the delete were soft, the row would
+        // still occupy the partial unique index and this would 500 on the
+        // constraint instead of succeeding.
+        const reposted = await api.post(
+          `/admin/reviews/${reviewId}/reply`,
+          { content: 'Second try' },
+          adminHeaders
+        )
+        expect(reposted.status).toEqual(200)
+        expect(reposted.data.reply.content).toEqual('Second try')
+      })
+
+      it('deleting a reply that does not exist is a 404, not a 500', async () => {
+        const err = await api
+          .delete(`/admin/reviews/${reviewId}/reply`, adminHeaders)
+          .catch((e) => e.response)
+        expect(err.status).toEqual(404)
+      })
+
+      it('deleting a reply on a review that does not exist is a 404', async () => {
+        const err = await api
+          .delete('/admin/reviews/rev_nope/reply', adminHeaders)
+          .catch((e) => e.response)
+        expect(err.status).toEqual(404)
+      })
+
+      it('requires authentication', async () => {
+        const err = await api
+          .delete(`/admin/reviews/${reviewId}/reply`)
+          .catch((e) => e.response)
+        expect(err.status).toEqual(401)
+      })
+
+      it('does not emit an event on delete', async () => {
+        await api.post(`/admin/reviews/${reviewId}/reply`, { content: 'Thanks!' }, adminHeaders)
+
+        const eventBus = getContainer().resolve(Modules.EVENT_BUS)
+        const emitSpy = jest.spyOn(eventBus, 'emit')
+
+        await api.delete(`/admin/reviews/${reviewId}/reply`, adminHeaders)
+        expect(replyEventNames(emitSpy)).toEqual([])
+
+        emitSpy.mockRestore()
+      })
+    })
   },
 })
