@@ -27,6 +27,13 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   // database - never by fetching every review and filtering in JS. A JS
   // filter would still load pending/rejected content into memory, one
   // refactor away from being serialised into a public response.
+  //
+  // This filter decides which REVIEWS this route lists. It is no longer
+  // what protects their MEDIA: that rule lives in
+  // service.listVisibleReviewMedias() and is re-derived there from the
+  // reviews table, so removing or loosening this filter cannot leak a
+  // non-approved review's media (spec §6 - enforced in the service layer,
+  // not per-route).
   const filters: Record<string, unknown> = {
     product_id: req.params.id,
     status: 'approved',
@@ -46,17 +53,11 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     order: ORDER_BY[sort ?? 'newest'],
   })
 
-  // Media is fetched only for reviews already filtered to `approved` above,
-  // in a single query keyed by the whole id set - not one query per review.
-  // That keeps visibility derived from the parent review (there is no
-  // status column on review_media to drift out of sync) and keeps this
-  // route from issuing an N+1 query against a review list.
-  const media = reviews.length
-    ? await service.listReviewMedias({
-        review_id: reviews.map((r) => r.id),
-        hidden_at: null,
-      })
-    : []
+  // Media visibility is the service's rule, not this route's: one query
+  // keyed by the whole id set (never N+1), with approved-only and
+  // not-hidden both applied inside listVisibleReviewMedias(). Passing ids
+  // that are already approved is belt-and-braces, not the guarantee.
+  const media = await service.listVisibleReviewMedias(reviews.map((r) => r.id))
 
   const mediaByReview = new Map<string, typeof media>()
 

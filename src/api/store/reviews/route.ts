@@ -15,16 +15,15 @@ export async function POST(
 
   const service = req.scope.resolve(REVIEW_MODULE)
 
-  // Fetched the same way as the list route: keyed by this one review's id,
-  // filtered to non-hidden. A freshly submitted review is not yet approved
-  // (unless auto-approval is on), but its own media is still the
-  // submitter's own content to see back immediately - visibility to OTHER
-  // shoppers is still gated entirely by the list route's approved-only
-  // filter, which this response never bypasses.
-  const media = await service.listReviewMedias({
-    review_id: result.id,
-    hidden_at: null,
-  })
+  // The one place that deliberately does NOT use listVisibleReviewMedias():
+  // a freshly submitted review is not yet approved (unless auto-approval is
+  // on), but its own media is the submitter's own content and echoing it
+  // back is the point of this response. The exception is named rather than
+  // expressed as a raw filter here, so it reads as a decision and cannot be
+  // copied into a new store route by accident - see the method's docstring.
+  // Visibility to OTHER shoppers is unaffected: every read path goes
+  // through the approved-only method.
+  const media = await service.listOwnSubmissionMedia(result.id)
 
   // Field-by-field response, not the model: a guest's email must never
   // reach a store response, and an explicit allow-list cannot leak a

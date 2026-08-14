@@ -72,18 +72,15 @@ export async function recomputeReviewStats(
 
     count += approved.length
 
-    // Same rule as the store routes: media is only ever counted for
-    // reviews already filtered to approved, and hidden media is excluded -
-    // visibility stays derived from the parent review, never a separately
-    // stored fact that could drift. Counted with listAndCount so the rows
-    // are never materialised, and keyed by one page of ids at a time so
-    // the `IN` list stays bounded too.
-    const [, pageMediaCount] = await service.listAndCountReviewMedias(
-      { review_id: approved.map((review) => review.id), hidden_at: null },
-      { take: 1, select: ['id'] }
+    // Exactly the rule the store routes use, because it is literally the
+    // same method: approved-only and not-hidden are applied inside
+    // countVisibleReviewMedias(), which counts with an aggregate rather
+    // than materialising rows, and is keyed by one page of ids at a time
+    // so the `IN` list stays bounded too. The summary can therefore never
+    // report a media_count the store routes would not show.
+    mediaCount += await service.countVisibleReviewMedias(
+      approved.map((review) => review.id)
     )
-
-    mediaCount += pageMediaCount
 
     if (approved.length < pageSize) {
       break

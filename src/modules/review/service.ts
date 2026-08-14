@@ -130,6 +130,122 @@ class ReviewModuleService extends MedusaService({
 
     return deleted
   }
+
+  /**
+   * THE enforcement point for "which media may a store endpoint show".
+   *
+   * Spec §6 requires that media of a non-approved review is never returned
+   * by any store endpoint, "enforced in the service layer, not per-route".
+   * The rule has two halves and both live here, so a route cannot express
+   * one and forget the other:
+   *
+   *   1. the parent review must be `approved`, and
+   *   2. the media itself must not be hidden (`hidden_at IS NULL`).
+   *
+   * Approval is re-derived from the reviews table rather than trusted from
+   * the caller's id list, which is what makes this an enforcement point
+   * instead of a shorthand. A caller that hands over unfiltered ids - the
+   * Phase 4 gallery API is exactly the shape that will - still gets only
+   * visible media back. There is deliberately no status column on
+   * review_media to drift out of sync with the review it belongs to.
+   *
+   * The one deliberate exception is listOwnSubmissionMedia() below; it is a
+   * separate, differently-named method precisely so that deviating from
+   * this rule has to be a decision someone writes down.
+   */
+  @InjectManager()
+  async listVisibleReviewMedias(
+    reviewIds: string | string[],
+    @MedusaContext() context: Context = {}
+  ) {
+    const ids = Array.isArray(reviewIds) ? reviewIds : [reviewIds]
+
+    if (!ids.length) {
+      return []
+    }
+
+    const approved = await this.listReviews(
+      { id: ids, status: 'approved' },
+      { select: ['id'], take: ids.length },
+      context
+    )
+
+    if (!approved.length) {
+      return []
+    }
+
+    // No `take`: identical to what the call sites passed before this
+    // helper existed. The id set is already bounded by the caller (the
+    // store list route caps `limit` at 100), so this is not the unbounded
+    // scan the sweep and the stats recompute were.
+    return await this.listReviewMedias(
+      { review_id: approved.map((review) => review.id), hidden_at: null },
+      undefined,
+      context
+    )
+  }
+
+  /**
+   * The same rule as listVisibleReviewMedias(), counted rather than
+   * materialised - an aggregate COUNT, so the denormalized stats summary
+   * never loads media rows it only wants the size of.
+   */
+  @InjectManager()
+  async countVisibleReviewMedias(
+    reviewIds: string | string[],
+    @MedusaContext() context: Context = {}
+  ): Promise<number> {
+    const ids = Array.isArray(reviewIds) ? reviewIds : [reviewIds]
+
+    if (!ids.length) {
+      return 0
+    }
+
+    const approved = await this.listReviews(
+      { id: ids, status: 'approved' },
+      { select: ['id'], take: ids.length },
+      context
+    )
+
+    if (!approved.length) {
+      return 0
+    }
+
+    const [, count] = await this.listAndCountReviewMedias(
+      { review_id: approved.map((review) => review.id), hidden_at: null },
+      { take: 1, select: ['id'] },
+      context
+    )
+
+    return count
+  }
+
+  /**
+   * The single, deliberate exception to the approved-only rule above: the
+   * response to POST /store/reviews, echoing back the review the caller
+   * just submitted. That review is normally still `pending`, but its media
+   * is the submitter's own content and showing it back immediately is the
+   * point of the response.
+   *
+   * It is a distinct method rather than a flag on listVisibleReviewMedias()
+   * so the exception is impossible to take by accident: any new store
+   * surface that reaches for "media for these reviews" finds the
+   * approved-only method first, and using this one instead is a visible,
+   * named choice. Never call this with a review id the caller did not just
+   * create - it does not check approval, so it would expose an unmoderated
+   * review's media to a third party.
+   */
+  @InjectManager()
+  async listOwnSubmissionMedia(
+    reviewId: string,
+    @MedusaContext() context: Context = {}
+  ) {
+    return await this.listReviewMedias(
+      { review_id: reviewId, hidden_at: null },
+      undefined,
+      context
+    )
+  }
 }
 
 export default ReviewModuleService

@@ -7,11 +7,27 @@ type Input = { review_id: string; media_ids: string[] }
 
 /**
  * Media is uploaded anonymously (Task 4) before the review that will own it
- * exists, so `media_ids` arriving here are bare, guessable-looking ids with
- * no proof of who uploaded them. Refusing an id that is already attached to
- * a review is what stops one shopper claiming another shopper's uploaded
- * photo by guessing or reusing its id - see the atomic claim below, which is
- * the load-bearing logic for this step.
+ * exists, so `media_ids` arriving here are bare ids with no proof of who
+ * uploaded them.
+ *
+ * Be precise about what that means, because an earlier version of this
+ * docstring overstated it. Refusing an id that is ALREADY attached is what
+ * stops a second shopper reusing media that a review already owns. It does
+ * NOT stop one shopper claiming another shopper's photo during the window
+ * between upload and attachment - that window is the orphan TTL, 24 hours
+ * by default, and there is no ownership binding in it: no session, no
+ * signed token, no HMAC. Anyone holding an unattached media id can attach
+ * it to their own review with nothing but a publishable key.
+ *
+ * What actually keeps that from being exploitable is that the ids are not
+ * discoverable: `rmed_` ids are ULIDs (80 bits of randomness), so the only
+ * realistic path is a leaked id - a shared draft, browser history, a
+ * referrer, a log line. Closing the window properly needs a signed
+ * upload token, which changes the public upload response contract and
+ * belongs with Phase 6's auth work, so it is deliberately not done here.
+ *
+ * The atomic claim below is still the load-bearing logic of this step; it
+ * just guards a narrower thing than the old wording claimed.
  *
  * LANDMINE for whoever builds delete-review or media reassignment: the only
  * thing that ever sets a claimed row's review_id back to null today is this

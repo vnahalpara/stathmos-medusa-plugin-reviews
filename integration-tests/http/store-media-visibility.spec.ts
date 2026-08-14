@@ -50,8 +50,52 @@ medusaIntegrationTestRunner({
         { headers: await getPublishableKeyHeaders(container) }
       )
 
+      // Deliberately no `expect(JSON.stringify(...)).not.toContain('.png')`
+      // here: the line above already asserts the reviews array is empty, so
+      // that check could not fail and only looked like a guard. The real
+      // guard is the mixed pending/approved test below.
       expect(response.data.count).toEqual(0)
-      expect(JSON.stringify(response.data)).not.toContain('.png')
+    })
+
+    /**
+     * Spec §6: "Media of non-approved reviews is never returned by any store
+     * endpoint (enforced in the service layer, not per-route)." The tests
+     * above all go through a route, so they would still pass if the rule
+     * lived only in that route's query filter - which is exactly the state
+     * that makes Phase 4's gallery API able to forget it.
+     *
+     * This calls the service directly with an unfiltered review id, the way
+     * a new store surface would, and proves the service refuses it on its
+     * own.
+     */
+    it("refuses a non-approved review's media at the service layer, with no route involved", async () => {
+      const container = getContainer()
+      const service = container.resolve(REVIEW_MODULE)
+
+      const review = await reviewWithMedia(container, 'prod_service_layer')
+      const [row] = await service.listReviewMedias({ review_id: review.id })
+
+      // The media genuinely exists and is genuinely attached - the empty
+      // results below are the rule firing, not an empty fixture.
+      expect(row).toBeDefined()
+      expect(row.review_id).toEqual(review.id)
+
+      expect(await service.listVisibleReviewMedias([review.id])).toEqual([])
+      expect(await service.countVisibleReviewMedias([review.id])).toEqual(0)
+
+      await moderateReviewsWorkflow(container).run({
+        input: { ids: [review.id], status: 'approved' },
+      })
+
+      expect(await service.listVisibleReviewMedias([review.id])).toHaveLength(1)
+      expect(await service.countVisibleReviewMedias([review.id])).toEqual(1)
+
+      // The other half of the same rule: hidden media stays out even once
+      // the parent review is approved.
+      await service.updateReviewMedias({ id: row.id, hidden_at: new Date() })
+
+      expect(await service.listVisibleReviewMedias([review.id])).toEqual([])
+      expect(await service.countVisibleReviewMedias([review.id])).toEqual(0)
     })
 
     it('returns only the approved review\'s media when a pending review shares the product', async () => {
