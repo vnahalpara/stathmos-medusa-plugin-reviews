@@ -6,6 +6,7 @@ import { sdk } from '../../../lib/sdk'
 import { formatStars } from '../../../lib/format'
 import { AdminReview, MAX_REJECTION_REASON_LENGTH, STATUS_BADGE_COLOR } from './review-table'
 import MediaLightbox, { ReviewMediaItem } from './media-lightbox'
+import ReplyComposer from './reply-composer'
 
 type ReviewDrawerProps = {
   // The row the table already fetched, or null when the drawer is closed.
@@ -407,15 +408,20 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
                 </div>
 
                 {/*
-                  Task 10 seam: the reply composer renders here, below the
-                  review's own content and media and above the moderation
-                  footer. It should follow the same pattern established
-                  above - sdk.client.fetch through a useMutation, then
-                  update `liveReview`-equivalent local state from the
-                  response AND call invalidateTable() - rather than
-                  inventing a second way to keep the table and the open
-                  drawer in sync.
+                  Task 10: the reply composer. `activeReviewId` is the RAW
+                  `review` prop (not `liveReview.id`) deliberately - see
+                  reply-composer.tsx's own prop doc comment: it is both
+                  the id its mutations send (matching the fix Task 9's own
+                  review applied to this file's approve/reject calls) and
+                  the reset effect's dependency (matching this file's own
+                  reset effect, keyed on the same prop for the same
+                  close-then-reopen reason documented above).
                 */}
+                <ReplyComposer
+                  status={liveReview.status}
+                  activeReviewId={review?.id}
+                  invalidateTable={invalidateTable}
+                />
               </Drawer.Body>
               <Drawer.Footer>
                 <Button size="small" variant="secondary" onClick={onClose}>
