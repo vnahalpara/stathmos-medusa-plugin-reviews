@@ -18,20 +18,30 @@ import {
 import { sdk } from '../../../lib/sdk'
 import { formatStars, excerpt } from '../../../lib/format'
 
-type AdminReviewStatus = 'pending' | 'approved' | 'rejected'
+export type AdminReviewStatus = 'pending' | 'approved' | 'rejected'
 
 export type AdminReview = {
   id: string
   product_id: string
+  // Nullable: a guest reviewer has no customer_id, and a review can be
+  // submitted without an order reference. Present on every row GET
+  // /admin/reviews returns (it spreads the raw record, unlike the
+  // allow-listed store routes) - typed here too so the detail drawer can
+  // show them without re-fetching anything.
+  customer_id: string | null
+  order_id: string | null
   rating: number
   title: string | null
   content: string
   display_name: string
   email: string | null
   status: AdminReviewStatus
+  rejection_reason: string | null
   is_verified_purchase: boolean
   helpful_count: number
   created_at: string
+  updated_at: string
+  edited_at: string | null
   // Counts ALL media attached to the review, including anything a
   // moderator has already hidden - not the store-facing "visible" count.
   // See countMediaByReview() in src/modules/review/service.ts.
@@ -67,7 +77,7 @@ const STATUS_TABS: { label: string; value: ReviewStatusTab }[] = [
   { label: 'All', value: 'all' },
 ]
 
-const STATUS_BADGE_COLOR: Record<AdminReviewStatus, 'orange' | 'green' | 'red'> = {
+export const STATUS_BADGE_COLOR: Record<AdminReviewStatus, 'orange' | 'green' | 'red'> = {
   pending: 'orange',
   approved: 'green',
   rejected: 'red',
@@ -81,7 +91,9 @@ const PAGE_SIZE = 20
 // client-side too so a merchant gets an explained, disabled button instead
 // of a 400 they can't interpret.
 const MAX_BATCH_SIZE = 100
-const MAX_REJECTION_REASON_LENGTH = 500
+// Exported so the detail drawer's single-review reject prompt (Task 9) can
+// mirror the same server-enforced cap instead of restating the number.
+export const MAX_REJECTION_REASON_LENGTH = 500
 
 const columnHelper = createDataTableColumnHelper<AdminReview>()
 
@@ -163,7 +175,13 @@ const useColumns = () => {
 }
 
 type ReviewTableProps = {
-  onSelect: (id: string) => void
+  // Passes the full row rather than just an id: GET /admin/reviews has no
+  // single-review-by-id endpoint (see review-drawer.tsx's own comment), so
+  // the row this table already fetched IS the drawer's only data source -
+  // re-deriving it from an id after the fact would mean either a second,
+  // unsupported network call or a fragile re-lookup into this table's own
+  // (paginated, filterable) query cache.
+  onSelect: (review: AdminReview) => void
 }
 
 const ReviewTable = ({ onSelect }: ReviewTableProps) => {
@@ -359,7 +377,7 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
       state: pagination,
       onPaginationChange: setPagination,
     },
-    onRowClick: (_event, row) => onSelect(row.id),
+    onRowClick: (_event, row) => onSelect(row),
   })
 
   return (
