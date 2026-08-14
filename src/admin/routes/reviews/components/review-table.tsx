@@ -227,10 +227,21 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
   const spansMultipleProducts = selectedProductIds.size > 1
 
   const batchStatusMutation = useMutation({
-    mutationFn: (body: {
+    mutationFn: ({
+      spansMultipleProducts: _spansMultipleProducts,
+      ...body
+    }: {
       ids: string[]
       status: AdminReviewStatus
       rejection_reason?: string
+      // Snapshotted at the moment `mutate()` is called, not read live from
+      // component state in `onSuccess` - the selection (and which page's
+      // data is loaded) can change while the request is in flight, and the
+      // toast must describe the batch that was actually sent, not whatever
+      // is currently selected. Stripped out here rather than sent to the
+      // server, which rejects unknown keys (`BatchStatusSchema` is
+      // `.strict()`).
+      spansMultipleProducts: boolean
     }) =>
       sdk.client.fetch('/admin/reviews/batch/status', {
         method: 'POST',
@@ -249,7 +260,7 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
         // rating summary for the first product in a batch. Say so here
         // rather than letting the merchant assume every affected
         // product's summary is now correct.
-        description: spansMultipleProducts
+        description: variables.spansMultipleProducts
           ? "This batch spanned more than one product, so only the first product's rating summary was refreshed - the rest will update on their next change."
           : undefined,
       })
@@ -273,7 +284,11 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
     if (selectedCount === 0 || overSelectionLimit) {
       return
     }
-    batchStatusMutation.mutate({ ids: selectedIds, status: 'approved' })
+    batchStatusMutation.mutate({
+      ids: selectedIds,
+      status: 'approved',
+      spansMultipleProducts,
+    })
   }
 
   const openRejectPrompt = () => {
@@ -290,6 +305,7 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
       ids: selectedIds,
       status: 'rejected',
       rejection_reason: reason.length > 0 ? reason : undefined,
+      spansMultipleProducts,
     })
   }
 
@@ -301,6 +317,12 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
     // merchant stranded on e.g. page 3 of a tab with a single page of
     // results, looking at an empty table.
     setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+    // A selection is only meaningful against the view it was made in.
+    // Without this, rows selected on one tab silently ride along into
+    // another and get bulk-approved/rejected alongside rows the merchant
+    // can no longer even see - a wrong *action* on customer-visible
+    // content, not just a stale display.
+    setRowSelection({})
   }
 
   const handleSearchChange = (value: string) => {
@@ -313,6 +335,10 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
     // use-data-table.js rather than assumed, since this repo has no
     // component-rendering test harness to check it at runtime.
     setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+    // Same reasoning as the tab-change handler above: a selection made
+    // against one search's results must not silently carry into a
+    // different result set and get bulk-moderated there.
+    setRowSelection({})
   }
 
   const table = useDataTable({
