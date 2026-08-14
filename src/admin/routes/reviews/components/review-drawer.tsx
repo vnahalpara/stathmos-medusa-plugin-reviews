@@ -171,6 +171,19 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
       }),
     onSuccess: (response) => {
       setLiveReview((prev) => (prev ? { ...prev, ...response.review } : prev))
+      // Rejecting hard-deletes ALL of this review's media server-side
+      // (deleteMediaForRejectedReviews, in the same request). No
+      // liveReview.media_count bookkeeping needed here - nothing displays
+      // that field anymore (see the comment above the "Media" heading
+      // below) - but the media QUERY itself must be cleared, or it would
+      // keep showing photos the server already destroyed until something
+      // else happened to invalidate it. Clear the cache immediately (no
+      // flash of stale photos) and invalidate for real, exactly like
+      // deleteMediaMutation does below.
+      queryClient.setQueryData<{ media: ReviewMediaItem[] }>(['admin-review-media', review?.id], {
+        media: [],
+      })
+      queryClient.invalidateQueries({ queryKey: ['admin-review-media', review?.id] })
       invalidateTable()
       setRejectPromptOpen(false)
       toast.success('Review rejected')
@@ -198,7 +211,10 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
         (prev) => (prev ? { media: prev.media.filter((item) => item.id !== mediaId) } : prev)
       )
       queryClient.invalidateQueries({ queryKey: ['admin-review-media', review?.id] })
-      setLiveReview((prev) => (prev ? { ...prev, media_count: Math.max(0, prev.media_count - 1) } : prev))
+      // No liveReview.media_count bookkeeping here - the displayed count is
+      // now derived entirely from mediaQuery's own data (see the comment
+      // above the "Media" heading below), so there's nothing left that
+      // needs it kept in sync.
       setMediaPendingDelete(null)
       invalidateTable()
       toast.success('Media deleted')
@@ -217,12 +233,26 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
     setRejectPromptOpen(true)
   }
 
+  // Both mutate calls read `review` (the prop), not `liveReview`. `review`
+  // is always current; `liveReview` lags it by one render, since the reset
+  // effect above only fires after commit. No reachable exploit was found
+  // (approve is a single click and rejection's own reset already made it
+  // safe there), but reading the prop directly is free and removes the
+  // whole class of timing question rather than resting on "nobody can
+  // click that fast."
+  const handleApprove = () => {
+    if (!review) {
+      return
+    }
+    approveMutation.mutate(review.id)
+  }
+
   const handleConfirmReject = () => {
-    if (!liveReview) {
+    if (!review) {
       return
     }
     const reason = rejectReason.trim()
-    rejectMutation.mutate({ id: liveReview.id, rejection_reason: reason.length > 0 ? reason : undefined })
+    rejectMutation.mutate({ id: review.id, rejection_reason: reason.length > 0 ? reason : undefined })
   }
 
   // A lightbox delete request closes the lightbox first rather than
@@ -292,14 +322,20 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
                 </div>
 
                 <div className="flex flex-col gap-y-2">
+                  {/*
+                    The count comes from mediaQuery's own data, never from
+                    liveReview.media_count - that field can't be kept in sync
+                    from a mutation response (media_count isn't a column on
+                    Review, and reject doesn't return one), so trusting it
+                    here risked showing a number that disagreed with the
+                    strip/lightbox underneath it. No number is shown at all
+                    until the query has actually resolved, rather than
+                    showing a guess that might not match what renders below.
+                  */}
                   <Text size="small" leading="compact" weight="plus">
-                    Media ({liveReview.media_count})
+                    Media{mediaQuery.data ? ` (${mediaItems.length})` : ''}
                   </Text>
-                  {liveReview.media_count === 0 ? (
-                    <Text size="small" leading="compact" className="text-ui-fg-subtle">
-                      No media attached.
-                    </Text>
-                  ) : mediaQuery.isLoading ? (
+                  {mediaQuery.isLoading ? (
                     <Text size="small" leading="compact" className="text-ui-fg-subtle">
                       Loading media…
                     </Text>
@@ -390,7 +426,7 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
                   variant="secondary"
                   disabled={isMutating}
                   isLoading={approveMutation.isPending}
-                  onClick={() => approveMutation.mutate(liveReview.id)}
+                  onClick={handleApprove}
                 >
                   Approve
                 </Button>

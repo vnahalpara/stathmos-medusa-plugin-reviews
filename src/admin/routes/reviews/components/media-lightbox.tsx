@@ -68,6 +68,18 @@ const MediaLightbox = ({ media, index, onOpenChange, onDeleteRequest, isDeleting
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // The Drawer this lightbox opens inside is a Radix Dialog, and
+        // Radix's own Escape handling (`@radix-ui/react-use-escape-keydown`,
+        // confirmed by reading its source) listens on `document` with
+        // `{ capture: true }`. Registering here on `window` with the same
+        // `{ capture: true }` runs first - window is "outside" document in
+        // the capture path - so stopPropagation() reliably stops the event
+        // before Radix's own handler ever sees it. Without this, one
+        // Escape press while the lightbox is open would close both the
+        // lightbox AND the underlying Drawer, since nothing tells Radix
+        // this hand-rolled overlay is "on top" of it (it isn't a Radix
+        // dialog and isn't in Radix's own layer stack).
+        event.stopPropagation()
         onOpenChange(null)
       } else if (event.key === 'ArrowLeft' && index !== null && index > 0) {
         onOpenChange(index - 1)
@@ -76,8 +88,8 @@ const MediaLightbox = ({ media, index, onOpenChange, onDeleteRequest, isDeleting
       }
     }
 
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    window.addEventListener('keydown', handleKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true })
   }, [open, index, media.length, onOpenChange])
 
   if (!open || !current || index === null) {
