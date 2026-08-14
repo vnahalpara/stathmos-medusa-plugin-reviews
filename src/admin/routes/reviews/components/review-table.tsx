@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import {
   Badge,
@@ -59,11 +60,18 @@ type ReviewStatusTab = AdminReviewStatus | 'all'
 
 /**
  * Kept as an object (rather than several independent `useState` calls) so
- * that Task 11's requirement - reading a `product_id` query param from the
- * URL on mount, because its product widget links to
- * `/app/reviews?product_id=<id>` - is a small addition to this shape
- * (initialise `product_id` from `useSearchParams()` instead of leaving it
- * `undefined`) rather than a rewrite of the filter state.
+ * that reading a `product_id` query param from the URL on mount - the
+ * product widget (Task 11) links here via `/app/reviews?product_id=<id>` -
+ * is a small addition to this shape (`product_id` initialised from
+ * `useSearchParams()` below) rather than a rewrite of the filter state.
+ * `product_id` lives only in this state after the initial read: tab
+ * switches and searches both preserve it (see `handleTabChange` and
+ * `handleSearchChange`, which never touch it), and it is not written back
+ * to the URL on every filter change - only the initial mount reads the URL,
+ * and `handleClearProductFilter` is the one place that also updates it, so
+ * a stale query string left over from a followed link doesn't silently
+ * reapply the filter after the merchant has explicitly cleared it and then
+ * refreshed the page.
  */
 type ReviewTableFilters = {
   status: ReviewStatusTab
@@ -185,7 +193,14 @@ type ReviewTableProps = {
 }
 
 const ReviewTable = ({ onSelect }: ReviewTableProps) => {
-  const [filters, setFilters] = useState<ReviewTableFilters>({ status: 'pending' })
+  const [searchParams, setSearchParams] = useSearchParams()
+  // Read once, from the URL present at mount - see the `ReviewTableFilters`
+  // doc comment above for why this table doesn't keep syncing `product_id`
+  // back and forth with the URL afterward.
+  const [filters, setFilters] = useState<ReviewTableFilters>(() => ({
+    status: 'pending',
+    product_id: searchParams.get('product_id') ?? undefined,
+  }))
   const [rowSelection, setRowSelection] = useState<DataTableRowSelectionState>({})
   const [search, setSearch] = useState('')
   const [pagination, setPagination] = useState<DataTablePaginationState>({
@@ -359,6 +374,26 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
     setRowSelection({})
   }
 
+  const handleClearProductFilter = () => {
+    setFilters((prev) => ({ ...prev, product_id: undefined }))
+    // Same reasoning as the tab/search handlers above: a page index or
+    // selection scoped to one product's results is meaningless once the
+    // filter widens back out to every product.
+    setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+    setRowSelection({})
+    // Also drop it from the URL (not just component state) so a page
+    // refresh after clearing doesn't silently reapply the filter from a
+    // stale query string.
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('product_id')
+        return next
+      },
+      { replace: true }
+    )
+  }
+
   const table = useDataTable({
     data: reviews,
     columns,
@@ -397,6 +432,19 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
           ))}
         </div>
       </div>
+      {filters.product_id && (
+        <div className="flex items-center justify-between px-6 py-3">
+          <Text size="small" leading="compact" className="text-ui-fg-subtle">
+            Filtered to product{' '}
+            <Text as="span" size="small" leading="compact" weight="plus">
+              {filters.product_id}
+            </Text>
+          </Text>
+          <Button size="small" variant="transparent" onClick={handleClearProductFilter}>
+            Clear filter
+          </Button>
+        </div>
+      )}
       {selectedCount > 0 && (
         <div className="flex items-center justify-between px-6 py-4">
           <Text size="small" leading="compact" weight="plus">
