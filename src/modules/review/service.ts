@@ -1,5 +1,5 @@
 import type { Knex } from 'knex'
-import { Context } from '@medusajs/framework/types'
+import { Context, InferEntityType } from '@medusajs/framework/types'
 import {
   generateEntityId,
   InjectManager,
@@ -323,6 +323,48 @@ class ReviewModuleService extends MedusaService({
     )
 
     return count
+  }
+
+  /**
+   * THE enforcement point for "which replies may a store endpoint show".
+   *
+   * A reply must never appear on a store route unless its parent review is
+   * `approved`. Approval is re-derived from the reviews table rather than
+   * trusted from the caller's id list, so a route that hands over
+   * unfiltered ids still cannot leak a reply attached to a pending or
+   * rejected review. Mirrors listVisibleReviewMedias() deliberately - the
+   * two rules are the same rule and should read the same way.
+   *
+   * `replied_by` is part of the row this returns (it is not a store-facing
+   * shape) - callers building a store response must allow-list fields
+   * rather than spread it. See ReviewReply's model comment and the
+   * store products/[id]/reviews route for the enforcement of that half of
+   * the rule.
+   */
+  @InjectManager()
+  async listVisibleReviewReplies(
+    reviewIds: string | string[],
+    @MedusaContext() context: Context = {}
+  ): Promise<InferEntityType<typeof ReviewReply>[]> {
+    const ids = Array.isArray(reviewIds) ? reviewIds : [reviewIds]
+    if (!ids.length) {
+      return []
+    }
+
+    const approved = await this.listReviews(
+      { id: ids, status: 'approved' },
+      { select: ['id'], take: ids.length },
+      context
+    )
+    if (!approved.length) {
+      return []
+    }
+
+    return this.listReviewReplies(
+      { review_id: approved.map((r) => r.id) },
+      undefined,
+      context
+    )
   }
 
   /**
