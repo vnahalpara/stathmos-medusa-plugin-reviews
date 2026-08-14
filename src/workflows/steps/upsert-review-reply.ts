@@ -6,9 +6,18 @@ type Input = { review_id: string; content: string; replied_by?: string }
 
 /**
  * One reply per review (Task 1's partial unique index enforces this at the
- * database level too), so this step upserts rather than always inserting: a
+ * database level too), so this upserts rather than always inserting: a
  * second POST to the same review edits the existing reply in place instead
  * of racing that constraint into a 500.
+ *
+ * The create-or-update decision itself is made by a single atomic
+ * statement - `service.upsertReviewReply()`, see its docstring in
+ * `src/modules/review/service.ts` - not by reading first and branching
+ * here. Two concurrent first replies to the same review both call that one
+ * statement; Postgres's `ON CONFLICT DO UPDATE` resolves which one "wins"
+ * as a create and which becomes an edit, atomically, so there is no window
+ * for both to observe "no existing reply" and race each other into the
+ * unique index.
  */
 export const upsertReviewReplyStep = createStep(
   'upsert-review-reply',
@@ -20,18 +29,33 @@ export const upsertReviewReplyStep = createStep(
       throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Review not found')
     }
 
-    const [existing] = await service.listReviewReplies(
+    // Read purely for compensation bookkeeping - it plays no part in the
+    // create-or-update decision below, so it cannot reopen the race the
+    // atomic upsert exists to close. In the ordinary, non-concurrent path
+    // (the only path either compensation test below exercises) this
+    // accurately captures the text that was live immediately before this
+    // call. It is not immune to every pathological interleaving: if this
+    // very request loses a concurrent first-reply race (its upsert becomes
+    // the *update* branch even though this read saw nothing), this read
+    // sees no row and cannot report the true prior text - restoring on a
+    // later failure would then be a no-op rather than an accurate rollback.
+    // That compound case (a race AND a downstream failure in the same
+    // request) is out of scope here; nothing in this task's test coverage
+    // requires it, and closing it would need locking the read together
+    // with the write inside one statement, trading simplicity for a
+    // corner nobody has asked to guard yet.
+    const [existingBeforeWrite] = await service.listReviewReplies(
       { review_id: input.review_id },
       { take: 1 }
     )
 
-    if (existing) {
-      const updated = await service.updateReviewReplies({
-        id: existing.id,
-        content: input.content,
-        replied_by: input.replied_by ?? null,
-      })
+    const reply = await service.upsertReviewReply({
+      review_id: input.review_id,
+      content: input.content,
+      replied_by: input.replied_by ?? null,
+    })
 
+    if (!reply.created) {
       // Compensation restores the previous text rather than deleting a
       // reply the merchant had already published - an edit that fails
       // downstream in the workflow must roll back to what was live before,
@@ -43,20 +67,18 @@ export const upsertReviewReplyStep = createStep(
       // two return sites, silently dropping whichever field only one
       // branch declared.
       return new StepResponse(
-        { reply: updated, created: false },
-        { created: false, id: existing.id, previous_content: existing.content }
+        { reply, created: false },
+        {
+          created: false,
+          id: reply.id,
+          previous_content: existingBeforeWrite?.content ?? reply.content,
+        }
       )
     }
 
-    const created = await service.createReviewReplies({
-      review_id: input.review_id,
-      content: input.content,
-      replied_by: input.replied_by ?? null,
-    })
-
     return new StepResponse(
-      { reply: created, created: true },
-      { created: true, id: created.id, previous_content: '' }
+      { reply, created: true },
+      { created: true, id: reply.id, previous_content: '' }
     )
   },
   async (compensation, { container }) => {

@@ -1,6 +1,12 @@
 import type { Knex } from 'knex'
 import { Context } from '@medusajs/framework/types'
-import { InjectManager, MedusaContext, MedusaError, MedusaService } from '@medusajs/framework/utils'
+import {
+  generateEntityId,
+  InjectManager,
+  MedusaContext,
+  MedusaError,
+  MedusaService,
+} from '@medusajs/framework/utils'
 import { Review } from './models/review'
 import { ReviewSettings } from './models/review-settings'
 import { ReviewStats } from './models/review-stats'
@@ -131,6 +137,103 @@ class ReviewModuleService extends MedusaService({
       .returning(['id', 'file_id'])
 
     return deleted
+  }
+
+  /**
+   * Creates the review's reply if it has none, or edits the existing one in
+   * place - one statement, not a read-then-branch. That shape is exactly
+   * the race `claimMediaForReview`'s docstring warns about at length: two
+   * concurrent first replies to the same review would both read "no
+   * existing reply" and both attempt `createReviewReplies`, and the loser
+   * would hit Task 1's partial unique index as a raw constraint violation -
+   * surfaced by Medusa's generated repository as a confusing 400
+   * "already exists" instead of the upsert-to-edit this endpoint
+   * advertises. A single `INSERT ... ON CONFLICT (review_id) WHERE
+   * deleted_at IS NULL DO UPDATE`, issued through this module's own
+   * EntityManager/connection (never a connection resolved from the app
+   * container - same reasoning as `claimMediaForReview`), lets Postgres
+   * resolve the race atomically: the conflict target matches Task 1's
+   * partial unique index exactly, so a losing concurrent insert becomes an
+   * update within the same statement instead of a second, failing write.
+   *
+   * `(xmax = 0) AS inserted` is how the caller learns which branch fired,
+   * which it needs both for compensation (hard-delete a fresh reply vs.
+   * restore text on a rolled-back edit) and for the emitted event
+   * (`review.reply.created` vs `.updated`). This is not SQL-standard, but
+   * it is a long-relied-upon Postgres implementation detail: a freshly
+   * inserted tuple's `xmax` is 0, while the tuple `ON CONFLICT DO UPDATE`
+   * produces carries a non-zero `xmax` left over from the superseded insert
+   * attempt. Verified empirically, not just trusted from folklore - see the
+   * concurrent-first-reply test in `admin-reply.spec.ts` (asserts exactly
+   * one row survives two simultaneous first replies) and the event-name
+   * assertions in the same file (which would fail if `inserted` ever came
+   * back wrong for either branch).
+   */
+  @InjectManager()
+  async upsertReviewReply(
+    input: { review_id: string; content: string; replied_by: string | null },
+    @MedusaContext() context: Context<ReviewMediaManager> = {}
+  ): Promise<{
+    id: string
+    review_id: string
+    content: string
+    replied_by: string | null
+    created_at: Date
+    updated_at: Date
+    created: boolean
+  }> {
+    const manager = context.manager
+
+    if (!manager) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        'upsertReviewReply requires a manager from the review module context.'
+      )
+    }
+
+    const knex = manager.getTransactionContext() ?? manager.getKnex()
+    const now = new Date()
+
+    const { rows } = await knex.raw(
+      `insert into "review_reply" ("id", "review_id", "content", "replied_by", "created_at", "updated_at")
+       values (?, ?, ?, ?, ?, ?)
+       on conflict ("review_id") where "deleted_at" is null
+       do update set
+         "content" = excluded."content",
+         "replied_by" = excluded."replied_by",
+         "updated_at" = excluded."updated_at"
+       returning
+         "id", "review_id", "content", "replied_by", "created_at", "updated_at",
+         (xmax = 0) as "inserted"`,
+      [
+        generateEntityId(undefined, 'rrep'),
+        input.review_id,
+        input.content,
+        input.replied_by,
+        now,
+        now,
+      ]
+    )
+
+    const row = rows[0] as {
+      id: string
+      review_id: string
+      content: string
+      replied_by: string | null
+      created_at: Date
+      updated_at: Date
+      inserted: boolean
+    }
+
+    return {
+      id: row.id,
+      review_id: row.review_id,
+      content: row.content,
+      replied_by: row.replied_by,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      created: row.inserted,
+    }
   }
 
   /**
