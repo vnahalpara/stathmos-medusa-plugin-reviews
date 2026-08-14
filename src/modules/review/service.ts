@@ -326,6 +326,65 @@ class ReviewModuleService extends MedusaService({
   }
 
   /**
+   * Per-review media counts for a moderation list - `{ [review_id]: count }`
+   * - via a single grouped `COUNT(*) ... GROUP BY review_id` over the given
+   * ids, not a query per review. Built for GET /admin/reviews: fetching a
+   * page of reviews and then counting each one's media individually would
+   * be N+1, and a naive per-row call is exactly the "0 photos on every
+   * row" bug this method exists to fix.
+   *
+   * Deliberately counts ALL non-deleted media attached to each review,
+   * INCLUDING rows with `hidden_at` set - this is NOT the same rule as
+   * listVisibleReviewMedias()/countVisibleReviewMedias() above, which
+   * enforce the store-facing "approved review + not hidden" visibility
+   * rule. A moderator reviewing a queue needs to see what is actually
+   * attached to a review, hidden or not - reusing the store-facing method
+   * here would silently undercount media a moderator has already hidden.
+   * Do not swap this for countVisibleReviewMedias(): the two counts
+   * intentionally answer different questions for different audiences and
+   * are not meant to agree.
+   *
+   * Issued through this module's own EntityManager/connection, same
+   * reasoning as claimMediaForReview()/deleteUnattachedMedia() above - no
+   * connection resolved from the app container.
+   */
+  @InjectManager()
+  async countMediaByReview(
+    reviewIds: string[],
+    @MedusaContext() context: Context<ReviewMediaManager> = {}
+  ): Promise<Record<string, number>> {
+    if (!reviewIds.length) {
+      return {}
+    }
+
+    const manager = context.manager
+
+    if (!manager) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        'countMediaByReview requires a manager from the review module context.'
+      )
+    }
+
+    const knex = manager.getTransactionContext() ?? manager.getKnex()
+
+    const rows: { review_id: string; count: string }[] = await knex('review_media')
+      .select('review_id')
+      .count({ count: '*' })
+      .whereIn('review_id', reviewIds)
+      .whereNull('deleted_at')
+      .groupBy('review_id')
+
+    const counts: Record<string, number> = {}
+
+    for (const row of rows) {
+      counts[row.review_id] = Number(row.count)
+    }
+
+    return counts
+  }
+
+  /**
    * THE enforcement point for "which replies may a store endpoint show".
    *
    * A reply must never appear on a store route unless its parent review is

@@ -6,6 +6,7 @@ import {
   DataTable,
   DataTablePaginationState,
   DataTableRowSelectionState,
+  Heading,
   Text,
   Button,
   createDataTableColumnHelper,
@@ -28,12 +29,10 @@ export type AdminReview = {
   is_verified_purchase: boolean
   helpful_count: number
   created_at: string
-  // GET /admin/reviews does not currently return a per-review media count -
-  // only the aggregated per-product `review_stats.media_count` exists
-  // (surfaced via GET /admin/reviews/stats/:product_id). This field is read
-  // defensively so the Media column starts showing real numbers the moment
-  // a future task adds it to the row, with no change to this table.
-  media_count?: number
+  // Counts ALL media attached to the review, including anything a
+  // moderator has already hidden - not the store-facing "visible" count.
+  // See countMediaByReview() in src/modules/review/service.ts.
+  media_count: number
 }
 
 type AdminReviewsResponse = {
@@ -107,8 +106,7 @@ const useColumns = () => {
           </Text>
         ),
       }),
-      columnHelper.accessor((row) => row.media_count ?? 0, {
-        id: 'media_count',
+      columnHelper.accessor('media_count', {
         header: 'Media',
         cell: ({ getValue }) => (
           <Text size="small" leading="compact" className="text-ui-fg-subtle">
@@ -235,9 +233,7 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
   return (
     <Container className="divide-y p-0">
       <div className="flex items-center justify-between px-6 py-4">
-        <Text size="small" leading="compact" weight="plus">
-          Reviews
-        </Text>
+        <Heading level="h2">Reviews</Heading>
         <div className="flex gap-2">
           {STATUS_TABS.map((tab) => (
             <Button

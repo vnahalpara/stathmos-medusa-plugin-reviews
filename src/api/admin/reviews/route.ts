@@ -40,9 +40,21 @@ export async function GET(req: AuthenticatedMedusaRequest, res: MedusaResponse) 
     order: { created_at: 'DESC' },
   })
 
+  // One grouped query for the whole page, not a count per row - see
+  // countMediaByReview()'s own doc for why this must NOT reuse
+  // countVisibleReviewMedias(): that enforces the store-facing "approved +
+  // not hidden" rule, while a moderator needs the true attached count,
+  // including media that has already been hidden.
+  const mediaCounts = await service.countMediaByReview(reviews.map((review) => review.id))
+
+  const reviewsWithMediaCount = reviews.map((review) => ({
+    ...review,
+    media_count: mediaCounts[review.id] ?? 0,
+  }))
+
   // Unlike the store list route, the admin route intentionally returns the
   // full record - including a guest reviewer's email - rather than an
   // allow-listed subset. Moderating spam requires seeing who sent it; that
   // is correct here, not a leak.
-  res.json({ reviews, count, limit: limit ?? 20, offset: offset ?? 0 })
+  res.json({ reviews: reviewsWithMediaCount, count, limit: limit ?? 20, offset: offset ?? 0 })
 }

@@ -85,17 +85,79 @@ medusaIntegrationTestRunner({
 
     it('matches case-insensitively', async () => {
       const service = getContainer().resolve(REVIEW_MODULE)
-      await service.createReviews({
-        product_id: 'prod_search',
-        display_name: 'CaseTest',
-        rating: 5,
-        content: 'x'.repeat(10),
-      })
+      await service.createReviews([
+        {
+          product_id: 'prod_search',
+          display_name: 'CaseTest',
+          rating: 5,
+          content: 'x'.repeat(10),
+        },
+        // Decoy that must NOT match "casetest" anywhere - without it this
+        // test would pass even with `q` disabled entirely server-side,
+        // since a single seeded row always comes back alone regardless of
+        // whether filtering happened. This is the same shape as the
+        // display_name/email/content tests above, which already seed a
+        // non-matching second review for the same reason.
+        {
+          product_id: 'prod_search',
+          display_name: 'Someone else entirely',
+          rating: 4,
+          content: 'A completely unrelated review',
+        },
+      ])
 
       const response = await api.get('/admin/reviews?q=casetest', adminHeaders)
 
       expect(response.data.reviews).toHaveLength(1)
       expect(response.data.reviews[0].display_name).toEqual('CaseTest')
+      expect(response.data.count).toEqual(1)
+    })
+
+    it('combines q with a status filter - the most common real usage (searching a name while on the Pending tab)', async () => {
+      const service = getContainer().resolve(REVIEW_MODULE)
+      await service.createReviews([
+        // The target: matches q AND status.
+        {
+          product_id: 'prod_search_status',
+          display_name: 'Combotest Pending',
+          rating: 5,
+          content: 'x'.repeat(10),
+          status: 'pending',
+        },
+        // Matches q but NOT status - proves status is still applied
+        // alongside q, not bypassed.
+        {
+          product_id: 'prod_search_status',
+          display_name: 'Combotest Approved',
+          rating: 5,
+          content: 'y'.repeat(10),
+          status: 'approved',
+        },
+        // Matches status but NOT q - the decoy that makes this test
+        // load-bearing for q. Without it, `status=pending` alone already
+        // narrows to exactly one row, so this test would pass even with
+        // q silently ignored - the same vacuous-test shape flagged
+        // elsewhere in this suite.
+        {
+          product_id: 'prod_search_status',
+          display_name: 'Unrelated Pending Review',
+          rating: 3,
+          content: 'z'.repeat(10),
+          status: 'pending',
+        },
+      ])
+
+      const response = await api.get(
+        '/admin/reviews?q=combotest&status=pending',
+        adminHeaders
+      )
+
+      expect(response.data.reviews).toHaveLength(1)
+      expect(response.data.reviews[0].display_name).toEqual('Combotest Pending')
+      expect(response.data.reviews[0].status).toEqual('pending')
+      // Not 2 (the two pending reviews) and not 2 (both Combotest reviews)
+      // - proves q and status apply together (AND), neither one alone.
+      expect(response.data.count).toEqual(1)
     })
 
     it('finds a match beyond the first page, with count reflecting the filtered total', async () => {
