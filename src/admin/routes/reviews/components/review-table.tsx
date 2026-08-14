@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useQuery, keepPreviousData } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import {
   Badge,
   Container,
@@ -9,6 +9,9 @@ import {
   Heading,
   Text,
   Button,
+  Prompt,
+  Textarea,
+  toast,
   createDataTableColumnHelper,
   useDataTable,
 } from '@medusajs/ui'
@@ -71,6 +74,14 @@ const STATUS_BADGE_COLOR: Record<AdminReviewStatus, 'orange' | 'green' | 'red'> 
 }
 
 const PAGE_SIZE = 20
+
+// Mirrors BatchStatusSchema in src/api/admin/reviews/middlewares.ts. Kept in
+// sync by hand - the admin bundle and the API route are built and shipped
+// separately, so there's no runtime import to share here. Enforced
+// client-side too so a merchant gets an explained, disabled button instead
+// of a 400 they can't interpret.
+const MAX_BATCH_SIZE = 100
+const MAX_REJECTION_REASON_LENGTH = 500
 
 const columnHelper = createDataTableColumnHelper<AdminReview>()
 
@@ -163,6 +174,10 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
     pageIndex: 0,
     pageSize: PAGE_SIZE,
   })
+  const [rejectPromptOpen, setRejectPromptOpen] = useState(false)
+  const [rejectReason, setRejectReason] = useState('')
+
+  const queryClient = useQueryClient()
 
   const limit = pagination.pageSize
   const offset = pagination.pageIndex * limit
@@ -186,6 +201,97 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
   })
 
   const reviews = data?.reviews ?? []
+
+  const selectedIds = useMemo(() => Object.keys(rowSelection), [rowSelection])
+  const selectedCount = selectedIds.length
+  const overSelectionLimit = selectedCount > MAX_BATCH_SIZE
+
+  // Best-effort: only rows on the currently loaded page are visible here,
+  // so a selection carried over from a page we've since navigated away
+  // from won't be counted. That's fine for this check's purpose - it only
+  // needs to catch the common case where an unfiltered, multi-product
+  // batch is about to hit the "only the first product's summary is
+  // refreshed" backend limitation (see the README's "Known limitation:
+  // multi-product bulk moderation" section) so the success toast can say
+  // so, rather than silently implying every product's rating summary was
+  // brought up to date.
+  const selectedProductIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const review of reviews) {
+      if (rowSelection[review.id]) {
+        ids.add(review.product_id)
+      }
+    }
+    return ids
+  }, [reviews, rowSelection])
+  const spansMultipleProducts = selectedProductIds.size > 1
+
+  const batchStatusMutation = useMutation({
+    mutationFn: (body: {
+      ids: string[]
+      status: AdminReviewStatus
+      rejection_reason?: string
+    }) =>
+      sdk.client.fetch('/admin/reviews/batch/status', {
+        method: 'POST',
+        body,
+      }),
+    onSuccess: (_response, variables) => {
+      // Invalidate the table's own query, not just local selection state -
+      // a merchant looking at the "Pending" tab after approving needs the
+      // approved rows to actually disappear from it.
+      queryClient.invalidateQueries({ queryKey: ['admin-reviews'] })
+      setRowSelection({})
+      const count = variables.ids.length
+      const verb = variables.status === 'approved' ? 'approved' : 'rejected'
+      toast.success(`${count} review${count === 1 ? '' : 's'} ${verb}`, {
+        // Known limitation (see README): the backend only recomputes the
+        // rating summary for the first product in a batch. Say so here
+        // rather than letting the merchant assume every affected
+        // product's summary is now correct.
+        description: spansMultipleProducts
+          ? "This batch spanned more than one product, so only the first product's rating summary was refreshed - the rest will update on their next change."
+          : undefined,
+      })
+    },
+    onError: (error, variables) => {
+      // A bulk action that fails silently is the worst outcome here - the
+      // merchant must not be left assuming the batch went through.
+      const verb = variables.status === 'approved' ? 'approve' : 'reject'
+      toast.error(`Failed to ${verb} reviews`, {
+        description: error instanceof Error ? error.message : undefined,
+      })
+    },
+  })
+
+  const isApproving =
+    batchStatusMutation.isPending && batchStatusMutation.variables?.status === 'approved'
+  const isRejecting =
+    batchStatusMutation.isPending && batchStatusMutation.variables?.status === 'rejected'
+
+  const handleApprove = () => {
+    if (selectedCount === 0 || overSelectionLimit) {
+      return
+    }
+    batchStatusMutation.mutate({ ids: selectedIds, status: 'approved' })
+  }
+
+  const openRejectPrompt = () => {
+    setRejectReason('')
+    setRejectPromptOpen(true)
+  }
+
+  const handleConfirmReject = () => {
+    if (selectedCount === 0 || overSelectionLimit) {
+      return
+    }
+    const reason = rejectReason.trim()
+    batchStatusMutation.mutate({
+      ids: selectedIds,
+      status: 'rejected',
+      rejection_reason: reason.length > 0 ? reason : undefined,
+    })
+  }
 
   const columns = useColumns()
 
@@ -247,6 +353,38 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
           ))}
         </div>
       </div>
+      {selectedCount > 0 && (
+        <div className="flex items-center justify-between px-6 py-4">
+          <Text size="small" leading="compact" weight="plus">
+            {selectedCount} selected
+          </Text>
+          <div className="flex items-center gap-x-3">
+            {overSelectionLimit && (
+              <Text size="small" leading="compact" className="text-ui-fg-error">
+                Select {MAX_BATCH_SIZE} or fewer reviews to bulk update.
+              </Text>
+            )}
+            <Button
+              size="small"
+              variant="secondary"
+              disabled={overSelectionLimit || batchStatusMutation.isPending}
+              isLoading={isApproving}
+              onClick={handleApprove}
+            >
+              Approve
+            </Button>
+            <Button
+              size="small"
+              variant="danger"
+              disabled={overSelectionLimit || batchStatusMutation.isPending}
+              isLoading={isRejecting}
+              onClick={openRejectPrompt}
+            >
+              Reject
+            </Button>
+          </div>
+        </div>
+      )}
       <DataTable instance={table}>
         <DataTable.Toolbar className="px-6 py-4">
           <DataTable.Search placeholder="Search name, email, title or content..." />
@@ -254,6 +392,37 @@ const ReviewTable = ({ onSelect }: ReviewTableProps) => {
         <DataTable.Table />
         <DataTable.Pagination />
       </DataTable>
+      <Prompt open={rejectPromptOpen} onOpenChange={setRejectPromptOpen}>
+        <Prompt.Content>
+          <Prompt.Header>
+            <Prompt.Title>
+              Reject {selectedCount} review{selectedCount === 1 ? '' : 's'}
+            </Prompt.Title>
+            <Prompt.Description>
+              Optional - shown to the reviewer and wherever else this rejection reason is
+              displayed in the admin.
+            </Prompt.Description>
+          </Prompt.Header>
+          <div className="px-6 pb-6">
+            <Textarea
+              value={rejectReason}
+              onChange={(event) => setRejectReason(event.target.value)}
+              placeholder="Reason for rejecting (optional)"
+              maxLength={MAX_REJECTION_REASON_LENGTH}
+              rows={4}
+            />
+          </div>
+          <Prompt.Footer>
+            <Prompt.Cancel disabled={batchStatusMutation.isPending}>Cancel</Prompt.Cancel>
+            <Prompt.Action
+              disabled={batchStatusMutation.isPending}
+              onClick={handleConfirmReject}
+            >
+              Reject
+            </Prompt.Action>
+          </Prompt.Footer>
+        </Prompt.Content>
+      </Prompt>
     </Container>
   )
 }
