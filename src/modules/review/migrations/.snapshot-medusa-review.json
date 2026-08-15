@@ -936,7 +936,7 @@
           "length": null,
           "precision": null,
           "scale": null,
-          "default": "false",
+          "default": "true",
           "comment": null,
           "enumItems": [],
           "mappedType": "boolean"

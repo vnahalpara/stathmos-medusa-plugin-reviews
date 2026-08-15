@@ -27,8 +27,9 @@ export const REVIEW_SETTINGS_DEFAULTS: ReviewSettingsValues = {
   max_media_per_review: 5,
   max_image_size_mb: 5,
   max_video_size_mb: 50,
-  // Phase 4 ships the edit flow; the toggle must not be live before then.
-  allow_edit: false,
+  // Phase 4 ships the edit flow (POST /store/reviews/:id), so the toggle is
+  // now live by default - see update-review.ts / apply-review-edit.ts.
+  allow_edit: true,
   one_review_per_customer: true,
   min_content_length: 10,
   max_content_length: 5000,

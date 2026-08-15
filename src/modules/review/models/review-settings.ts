@@ -11,7 +11,7 @@ export const ReviewSettings = model.define('review_settings', {
   max_media_per_review: model.number().default(5),
   max_image_size_mb: model.number().default(5),
   max_video_size_mb: model.number().default(50),
-  allow_edit: model.boolean().default(false),
+  allow_edit: model.boolean().default(true),
   one_review_per_customer: model.boolean().default(true),
   min_content_length: model.number().default(10),
   max_content_length: model.number().default(5000),

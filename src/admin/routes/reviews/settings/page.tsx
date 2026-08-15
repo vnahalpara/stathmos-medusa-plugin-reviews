@@ -462,10 +462,10 @@ const ReviewSettingsPage = () => {
             <SectionHeader title="Editing" />
             <ToggleRow
               label="Allow customers to edit reviews"
-              help="Not yet available - review editing has not shipped. This control is disabled so it can't be switched on and mistaken for a working feature; a customer cannot edit a submitted review regardless of this setting."
+              help="Lets a signed-in customer edit their own review's rating, title and content after submitting it. Guests can never edit, since a guest submission has no account to prove ownership. If approval is required (above), an edited review is sent back to Pending and disappears from the storefront until it is re-approved; its photos and videos are unaffected."
               checked={draft.booleans.allow_edit}
               onCheckedChange={(value) => setBoolean('allow_edit', value)}
-              disabled
+              disabled={controlsDisabled}
             />
           </div>
         </>

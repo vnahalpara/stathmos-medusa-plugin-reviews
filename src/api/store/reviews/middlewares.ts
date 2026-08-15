@@ -145,6 +145,24 @@ export const CreateReviewSchema = z
 
 export type CreateReviewSchema = z.infer<typeof CreateReviewSchema>
 
+export const UpdateReviewSchema = z
+  .object({
+    rating: z.number().int().min(1).max(5).optional(),
+    title: z.string().max(200).optional(),
+    content: z.string().min(1).max(20000).optional(),
+  })
+  .strict()
+  // Same reasoning as CurateMediaSchema (admin/reviews/middlewares.ts): an
+  // empty `{}` is a 400, not a silent no-op that still flips an approved
+  // review back to `pending` for no actual content change.
+  .refine(
+    (data) =>
+      data.rating !== undefined || data.title !== undefined || data.content !== undefined,
+    { message: 'At least one of `rating`, `title` or `content` is required' }
+  )
+
+export type UpdateReviewSchema = z.infer<typeof UpdateReviewSchema>
+
 const toInt = (val: unknown) =>
   typeof val === 'string' ? parseInt(val, 10) : val
 
@@ -208,6 +226,21 @@ export const storeReviewMiddlewares: MiddlewareRoute[] = [
     matcher: '/store/reviews/gallery',
     method: 'GET',
     middlewares: [validateAndTransformQuery(GalleryQuerySchema, {})],
+  },
+  {
+    matcher: '/store/reviews/:id',
+    method: 'POST',
+    middlewares: [
+      // allowUnauthenticated so a guest still reaches the route/workflow -
+      // same reasoning as POST /store/reviews above - which then refuses
+      // with a specific, explanatory ownership error rather than the
+      // framework's own bare 401 for a missing session/bearer token. A
+      // customer session/bearer token IS attributed via req.auth_context
+      // when present, which is what applyReviewEditStep compares against
+      // the review's own customer_id.
+      authenticate('customer', ['session', 'bearer'], { allowUnauthenticated: true }),
+      validateAndTransformBody(UpdateReviewSchema),
+    ],
   },
   {
     matcher: '/store/reviews/:id/vote',
