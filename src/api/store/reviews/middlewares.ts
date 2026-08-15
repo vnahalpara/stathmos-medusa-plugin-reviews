@@ -15,6 +15,7 @@ import {
   MAX_UPLOAD_REQUEST_SIZE_BYTES,
   reviewMediaUploadLimits,
 } from '../../../media/upload-limits'
+import { GALLERY_MAX_LIMIT } from '../../../modules/review/service'
 
 // Files are held in memory only long enough to sniff and re-encode them;
 // the File Module owns persistence. Every ceiling, and the reasoning for
@@ -160,6 +161,23 @@ export const ListProductReviewsSchema = z
 
 export type ListProductReviewsSchema = z.infer<typeof ListProductReviewsSchema>
 
+export const GalleryQuerySchema = z
+  .object({
+    product_id: z.string().min(1).optional(),
+    type: z.enum(['image', 'video', 'all']).optional(),
+    // Same "an uncapped limit is a free denial of service" reasoning as
+    // ListProductReviewsSchema above, but higher stakes here: this is the
+    // one store route with no product/review scope required at all, so a
+    // caller can already ask for the whole store's gallery in one request
+    // - GALLERY_MAX_LIMIT (service.ts) is the single number both this
+    // schema and listGalleryMedia()'s own defensive clamp are pinned to.
+    limit: z.preprocess(toInt, z.number().int().min(1).max(GALLERY_MAX_LIMIT).optional()),
+    offset: z.preprocess(toInt, z.number().int().min(0).optional()),
+  })
+  .strict()
+
+export type GalleryQuerySchema = z.infer<typeof GalleryQuerySchema>
+
 export const storeReviewMiddlewares: MiddlewareRoute[] = [
   {
     matcher: '/store/reviews',
@@ -185,6 +203,11 @@ export const storeReviewMiddlewares: MiddlewareRoute[] = [
     matcher: '/store/reviews/uploads',
     method: 'POST',
     middlewares: [uploadReviewMediaFiles],
+  },
+  {
+    matcher: '/store/reviews/gallery',
+    method: 'GET',
+    middlewares: [validateAndTransformQuery(GalleryQuerySchema, {})],
   },
   {
     matcher: '/store/reviews/:id/vote',

@@ -25,6 +25,39 @@ type ReviewMediaManager = {
   getTransactionContext(): Knex.Transaction | undefined
 }
 
+export type GalleryMediaType = 'image' | 'video'
+
+export type GalleryFilters = {
+  product_id?: string
+  type?: GalleryMediaType
+}
+
+export type GalleryMediaRow = {
+  id: string
+  review_id: string
+  type: GalleryMediaType
+  url: string
+  thumbnail_url: string | null
+  pinned_at: Date | null
+  created_at: Date
+  rating: number
+  display_name: string
+  product_id: string
+}
+
+/**
+ * The route-level cap GalleryQuerySchema enforces (store/reviews/
+ * middlewares.ts) is the primary gate - a request over this never reaches
+ * the service at all. This is the second, service-level half of the same
+ * cap (defense in depth, the same posture listGalleryMedia() takes with
+ * approval below): a future caller that reaches listGalleryMedia() through
+ * some new route or a direct workflow call, without going through that
+ * Zod schema, still cannot force an unbounded scan of the largest, least
+ * restricted list this plugin serves.
+ */
+export const GALLERY_MAX_LIMIT = 100
+export const GALLERY_DEFAULT_LIMIT = 20
+
 class ReviewModuleService extends MedusaService({
   Review,
   ReviewSettings,
@@ -567,6 +600,148 @@ class ReviewModuleService extends MedusaService({
     )
 
     return count
+  }
+
+  /**
+   * Shared WHERE-clause builder for the gallery's list and count queries -
+   * both call this and add only what differs (select/order/limit vs.
+   * count), so the two can never quietly disagree about which rows
+   * qualify. That agreement is the point: a gallery grid whose `count`
+   * (used to render "page 3 of N") was computed against different
+   * filters than the rows it paginates is the same class of bug Phase 3's
+   * search fix had to correct for a JS-side filter, just reached a
+   * different way - two independently-maintained WHERE clauses drifting
+   * apart instead of one filter never reaching the database at all.
+   *
+   * A single joined query, not the two-step "approved review ids, then
+   * media WHERE review_id IN (...)" shape listVisibleReviewMedias() above
+   * uses. That shape is right for listVisibleReviewMedias(): its caller
+   * already has a bounded, specific set of review ids (a page of reviews)
+   * before it ever calls in. The gallery has no such id list - it is
+   * either scoped to one product or genuinely global - so materialising
+   * "every approved review's id" first would be the unbounded fetch this
+   * method exists to avoid. A join lets Postgres apply approval,
+   * `hidden_at`, `product_id` and `type` together, with its own indexes,
+   * and hand back only the rows that already satisfy every filter.
+   */
+  private buildGalleryQuery(knex: Knex, filters: GalleryFilters): Knex.QueryBuilder {
+    return knex('review_media as m')
+      .innerJoin('review as r', 'r.id', 'm.review_id')
+      .whereNull('m.deleted_at')
+      .whereNull('m.hidden_at')
+      .whereNull('r.deleted_at')
+      .where('r.status', 'approved')
+      .modify((qb) => {
+        if (filters.product_id) {
+          qb.andWhere('r.product_id', filters.product_id)
+        }
+
+        if (filters.type) {
+          qb.andWhere('m.type', filters.type)
+        }
+      })
+  }
+
+  /**
+   * THE enforcement point for "which media the gallery API may show" -
+   * the same rule listVisibleReviewMedias() enforces above, re-derived
+   * here for a caller shaped completely differently: the gallery route
+   * has no id list to hand in at all (spec §5 - it is scoped by
+   * `product_id`, optionally, or is the global site-wide gallery), which
+   * is exactly the shape most likely to tempt a route into trusting its
+   * own query params as the visibility filter instead of asking this
+   * layer. It does not: approval is re-derived from a live JOIN against
+   * `review` inside buildGalleryQuery() above, never trusted from
+   * `filters`, so a route that forgets to pre-filter by status cannot
+   * leak a pending or rejected review's photo into a public gallery.
+   *
+   * `hidden_at IS NULL` is applied the same way, for the same reason as
+   * listVisibleReviewMedias(): a moderator's curation decision must hold
+   * here too.
+   *
+   * Ordering and pagination happen in this one query, not in JS:
+   * `pinned_at DESC NULLS LAST, created_at DESC` puts curated media
+   * first, then newest - `NULLS LAST` is load-bearing, since Postgres's
+   * default for a bare `DESC` sort treats NULL as the largest value and
+   * would otherwise put every UNPINNED item ahead of pinned ones. `limit`
+   * is clamped to GALLERY_MAX_LIMIT here too (see that constant's
+   * docstring) before it ever reaches the database.
+   */
+  @InjectManager()
+  async listGalleryMedia(
+    filters: GalleryFilters & { limit?: number; offset?: number },
+    @MedusaContext() context: Context<ReviewMediaManager> = {}
+  ): Promise<GalleryMediaRow[]> {
+    const manager = context.manager
+
+    if (!manager) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        'listGalleryMedia requires a manager from the review module context.'
+      )
+    }
+
+    const knex = manager.getTransactionContext() ?? manager.getKnex()
+
+    const limit = Math.min(
+      Math.max(filters.limit ?? GALLERY_DEFAULT_LIMIT, 1),
+      GALLERY_MAX_LIMIT
+    )
+    const offset = Math.max(filters.offset ?? 0, 0)
+
+    return await this.buildGalleryQuery(knex, filters)
+      .select(
+        'm.id as id',
+        'm.review_id as review_id',
+        'm.type as type',
+        'm.url as url',
+        'm.thumbnail_url as thumbnail_url',
+        'm.pinned_at as pinned_at',
+        'm.created_at as created_at',
+        'r.rating as rating',
+        'r.display_name as display_name',
+        'r.product_id as product_id'
+      )
+      .orderByRaw('m.pinned_at DESC NULLS LAST, m.created_at DESC')
+      .limit(limit)
+      .offset(offset)
+  }
+
+  /**
+   * The gallery's total-match count, counted rather than materialised -
+   * same reasoning as countVisibleReviewMedias() above. Built on the exact
+   * same buildGalleryQuery() as listGalleryMedia(), so `count` can never
+   * disagree with what paging through `media` actually returns; see that
+   * method's own docstring for why that agreement is the point.
+   *
+   * Deliberately has no `limit`/`offset` parameter - a COUNT has no
+   * pagination to bound. GALLERY_MAX_LIMIT still governs it indirectly:
+   * because both queries share buildGalleryQuery(), the identical
+   * approval/hidden_at/product_id/type predicate that keeps
+   * listGalleryMedia() from ever paginating past a wider set of rows than
+   * this counts.
+   */
+  @InjectManager()
+  async countGalleryMedia(
+    filters: GalleryFilters,
+    @MedusaContext() context: Context<ReviewMediaManager> = {}
+  ): Promise<number> {
+    const manager = context.manager
+
+    if (!manager) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        'countGalleryMedia requires a manager from the review module context.'
+      )
+    }
+
+    const knex = manager.getTransactionContext() ?? manager.getKnex()
+
+    const [{ count }] = (await this.buildGalleryQuery(knex, filters).count({
+      count: 'm.id',
+    })) as { count: string }[]
+
+    return Number(count)
   }
 
   /**
