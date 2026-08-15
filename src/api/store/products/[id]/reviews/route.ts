@@ -1,5 +1,5 @@
 import { MedusaRequest, MedusaResponse } from '@medusajs/framework/http'
-import { MedusaError } from '@medusajs/framework/utils'
+import { MedusaError, Modules } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../../../../modules/review'
 import { getReviewSettings } from '../../../../../settings/get-review-settings'
 import { ListProductReviewsSchema } from '../../../reviews/middlewares'
@@ -67,6 +67,26 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     mediaByReview.set(item.review_id!, list)
   }
 
+  // Reply visibility is the service's rule, not this route's - same
+  // reasoning as media above: listVisibleReviewReplies() re-derives
+  // approval from the reviews table itself, so this route cannot leak a
+  // reply attached to a pending/rejected review even though `reviews` here
+  // is already filtered to approved ones.
+  const replies = await service.listVisibleReviewReplies(reviews.map((r) => r.id))
+  const replyByReview = new Map(replies.map((r) => [r.review_id, r]))
+
+  // Fetched once per request, not per review: the store's name is the
+  // same for every reply in this response.
+  // Falls back to a literal rather than null so `author` is always a
+  // string. A storefront that renders the field without a null guard
+  // would print "null" next to the merchant's reply - and the zero-store
+  // case that produces it is essentially unreachable, since Store is a
+  // required core module, so the guard would never be exercised in
+  // development and would fail in the one situation nobody tested.
+  const storeModule = req.scope.resolve(Modules.STORE)
+  const [store] = await storeModule.listStores({}, { take: 1 })
+  const author = store?.name ?? 'Store'
+
   res.json({
     // Field-by-field response, not the model: email and customer_id must
     // never reach a store response, and an explicit allow-list cannot leak
@@ -90,6 +110,16 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           url: m.url,
           thumbnail_url: m.thumbnail_url,
         })),
+      // Explicit allow-list, not the model row: `replied_by` holds the
+      // admin user's id and must never reach a store route (spec decision
+      // #3). The public author is always the store's name.
+      reply: replyByReview.has(review.id)
+        ? {
+            content: replyByReview.get(review.id)!.content,
+            created_at: replyByReview.get(review.id)!.created_at,
+            author,
+          }
+        : null,
     })),
     count,
     limit: limit ?? 20,

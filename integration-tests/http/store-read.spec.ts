@@ -83,6 +83,7 @@ medusaIntegrationTestRunner({
             'media',
             'product_id',
             'rating',
+            'reply',
             'status',
             'title',
           ].sort()
