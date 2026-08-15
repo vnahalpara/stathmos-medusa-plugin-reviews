@@ -8,6 +8,53 @@ editing released sections by hand.
 
 ## Unreleased
 
+Phase 3: merchant replies and a bundled admin UI. One live reply per review
+(`review_reply`, enforced by a partial unique index on `review_id`),
+created or updated atomically via `POST /admin/reviews/:id/reply`
+(`INSERT ... ON CONFLICT ... DO UPDATE`, so two concurrent saves can never
+produce two live rows), read back via `GET /admin/reviews/:id/reply`
+(`{ reply: null }` with a 200, not a 404, when nobody has replied yet), and
+removed via `DELETE /admin/reviews/:id/reply`. A reply is exposed on
+`GET /store/products/:id/reviews` only once its review is approved —
+re-derived from the reviews table on every read, the same rule and the
+same code shape as media visibility — and its public `author` is always
+the store's name, never the admin user who wrote it; `replied_by` is
+recorded on the row for audit only and never appears in any response body.
+Three more admin endpoints round out moderation:
+`GET /admin/reviews/stats/:product_id` (a product's rating summary,
+not gated by the `enabled` setting so a merchant can still see data they
+already have), `GET /admin/reviews/:id/media` (a review's media, including
+items already hidden), and free-text search (`q`) plus a `media_count`
+field on `GET /admin/reviews`. The admin dashboard now bundles a "Reviews"
+sidebar route: a moderation queue (Pending/Approved/Rejected/All tabs,
+server-side search, pagination), bulk approve/reject with a reason prompt,
+a detail drawer with a media lightbox and per-media delete, the reply
+composer, a product-detail widget linking into the filtered queue, and a
+settings page covering all 14 settings.
+
+**Two settings ship non-functional, by design, and are documented as
+such rather than left to be discovered by reading code.** `allow_edit` and
+`gallery_enabled` both exist in the settings schema and the settings page
+but affect no request yet: `allow_edit` is reserved for Phase 4's
+review-editing feature and ships disabled in the settings UI so it can't
+be switched on and mistaken for a working toggle; `gallery_enabled` is
+reserved for a future store-wide customer gallery, for which no API
+exists yet. Neither is a bug. See the README's
+[Admin settings](README.md#admin-settings) table for the full list of all
+14 settings, including the two above.
+
+**Admin media views intentionally include hidden media; the store-facing
+ones just as deliberately exclude it.** `GET /admin/reviews/:id/media` and
+the `media_count` field on `GET /admin/reviews` count and list every
+non-deleted item, including any with `hidden_at` set. The store-facing
+`media` array on `GET /store/products/:id/reviews` and its `media_count`
+in `/store/products/:id/reviews/stats` exclude hidden items. A moderator
+needs to see, and be able to delete, media that is already hidden; a
+shopper never should. This has no visible effect yet, since nothing before
+Phase 4's curation tooling ever sets `hidden_at`.
+
+Not implemented: the customer gallery API, helpful votes, review editing.
+
 Phase 2: photo and video review media. `POST /store/reviews/uploads`
 (multipart, field name `files`) accepts JPEG, PNG, WebP, AVIF, MP4 and WebM,
 determined by sniffing each file's own bytes rather than trusting the

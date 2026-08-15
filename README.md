@@ -4,15 +4,19 @@ Product reviews for [Medusa v2](https://medusajs.com) with photo and video
 support, a customer media gallery API, merchant replies, helpful votes, and
 moderation settings a merchant can change from the admin without a redeploy.
 
-> **Status: pre-release (Phase 2).** The core review module and photo/video
-> media have shipped: submitting, listing, moderating and summarizing
-> reviews; DB-backed settings editable from the admin without a redeploy;
-> and photo/video uploads with content-sniffed validation, EXIF stripping,
-> merchant-configurable size/count limits, and an hourly sweep of
-> never-attached uploads. **Not yet implemented: the customer gallery API,
-> helpful votes, merchant replies, and review editing.** Do not install this
-> from npm expecting those features. See [API](#api) for what works today
-> and [Roadmap](#roadmap) for what's next.
+> **Status: pre-release (Phase 3).** The core review module, photo/video
+> media, merchant replies and a bundled admin UI have shipped: submitting,
+> listing, moderating and summarizing reviews; DB-backed settings editable
+> from the admin without a redeploy; photo/video uploads with
+> content-sniffed validation, EXIF stripping, merchant-configurable
+> size/count limits, and an hourly sweep of never-attached uploads; a
+> merchant reply on each review, visible on the storefront only once the
+> review is approved; and a "Reviews" admin dashboard route with a
+> moderation queue, bulk actions, a media lightbox, a reply composer and a
+> settings page. **Not yet implemented: the customer gallery API, helpful
+> votes, and review editing.** Do not install this from npm expecting those
+> features. See [API](#api) for what works today and [Roadmap](#roadmap)
+> for what's next.
 
 ## Why another reviews plugin
 
@@ -29,7 +33,12 @@ this plugin sets out to cover.
 - 🖼️ **Customer gallery API** — UGC strips on product pages, or a site-wide
   gallery, product-scoped or global
 - ✅ Moderation queue with bulk approve/reject and rejection reasons
-- 💬 Merchant replies
+- 🖥️ **Bundled admin UI** — a "Reviews" dashboard route with a moderation
+  queue (tabs, server-side search, pagination), bulk approve/reject, a
+  detail drawer with a media lightbox and per-media delete, a merchant
+  reply composer, a product-detail widget, and a settings page
+- 💬 Merchant replies, visible on the storefront once their review is
+  approved, attributed to the store's name
 - 👍 Helpful votes with de-duplication
 - ⚙️ **Live settings** — approval, guests, verified-only, media caps and more,
   all editable from Settings → Reviews with no redeploy
@@ -118,18 +127,23 @@ is safe and recommended to clean it up.
 
 ## API
 
-Eleven endpoints ship across Phases 1–2:
+Sixteen endpoints ship across Phases 1–3:
 
 ```
 POST   /store/reviews                       Submit a review (guest or customer, per settings)
-GET    /store/products/:id/reviews          List a product's approved reviews
+GET    /store/products/:id/reviews          List a product's approved reviews, with their media and reply
 GET    /store/products/:id/reviews/stats    Denormalized rating summary + breakdown
 POST   /store/reviews/uploads               Upload review photos/videos (multipart, field name "files")
-GET    /admin/reviews                       List/filter reviews (status, product_id, rating)
+GET    /admin/reviews                       List/filter reviews (status, product_id, rating, free-text q); each row includes media_count
 POST   /admin/reviews/:id/approve           Approve one review
 POST   /admin/reviews/:id/reject            Reject one review, with a reason (permanently deletes its media)
 POST   /admin/reviews/batch/status          Bulk approve/reject/reset by id (rejecting deletes media)
 DELETE /admin/reviews/media/:id             Remove a single media item
+GET    /admin/reviews/:id/media             List a review's media, including items a moderator has hidden
+GET    /admin/reviews/stats/:product_id     Rating summary + breakdown for one product (admin; not gated by the enabled setting)
+POST   /admin/reviews/:id/reply             Create or update the merchant reply to a review
+GET    /admin/reviews/:id/reply             Read the current reply, or { reply: null } if there isn't one
+DELETE /admin/reviews/:id/reply             Delete the merchant reply
 GET    /admin/reviews/settings              Read the current settings
 POST   /admin/reviews/settings              Update settings (partial, no redeploy)
 ```
@@ -156,10 +170,64 @@ is effectively an unauthenticated write to object storage, bounded only by
 the checks below (format, size, count). Put it behind your own rate limiting
 if that matters for your storefront before Phase 6 ships.
 
-**Not implemented yet:** the customer media gallery API, helpful votes,
-merchant replies, and review editing. There is no route to edit or delete a
-review as its author, and no route to manage votes — those are Phases 3–4.
-See [Roadmap](#roadmap).
+**Not implemented yet:** the customer media gallery API, helpful votes, and
+review editing. There is no route to edit or delete a review as its author,
+and no route to manage votes — those are Phase 4. `gallery_enabled` and
+`allow_edit` already exist as settings (see
+[Admin settings](#admin-settings) below) but neither has a functional
+effect yet. See [Roadmap](#roadmap).
+
+### Admin settings
+
+All 14 settings below are read via `GET /admin/reviews/settings`, written
+(partially — send only the fields you want to change) via
+`POST /admin/reviews/settings`, and take effect immediately, with no
+redeploy: a 5-minute cache is invalidated on every successful write. The
+bundled admin UI's settings page (Settings → Reviews) exposes all 14.
+
+| Setting | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | Master switch. The three review-facing `/store/*` routes 404 when off. |
+| `require_approval` | `true` | New reviews start `pending` instead of `approved`. |
+| `allow_guest` | `false` | Lets unauthenticated shoppers submit reviews. |
+| `verified_only` | `false` | **Restricts submission to signed-in customers with a verified purchase.** Read that as written: with this on, a guest's submission is **rejected outright** at `POST /store/reviews`, not merely accepted and left without a "verified" badge. |
+| `allow_media` | `true` | Lets shoppers attach photos. Turning this off also blocks video, regardless of `allow_video`. |
+| `allow_video` | `true` | Lets shoppers attach video, in addition to photos. Has no effect while `allow_media` is off. |
+| `max_media_per_review` | `5` | 0–20. |
+| `max_image_size_mb` | `5` | 1–50. |
+| `max_video_size_mb` | `50` | 1–100. **Values above 100 have no effect.** Uploads are capped at 100MB per file at the transport layer regardless of what this is set to — see [Photo and video uploads](#photo-and-video-uploads). |
+| `allow_edit` | `false` | **Not implemented. This setting does nothing yet** — Phase 4 ships the review-editing feature it will gate. It ships disabled and non-interactive in the settings UI precisely so it cannot be switched on and mistaken for a working feature. |
+| `one_review_per_customer` | `true` | A signed-in customer may submit only one review per product. |
+| `min_content_length` | `10` | 0–1000. |
+| `max_content_length` | `5000` | 1–20000. |
+| `gallery_enabled` | `true` | **Not implemented. This setting does nothing yet** — reserved for a future store-wide customer photo gallery, for which no API exists. It does not affect the photos already shown on individual reviews, which are governed by `allow_media`/`allow_video` above, not this one. |
+
+### Merchant replies
+
+- **One live reply per review.** `POST /admin/reviews/:id/reply` creates a
+  reply if none exists or overwrites the existing one — there is no reply
+  history or threading in v1. The write is a single atomic
+  `INSERT ... ON CONFLICT (review_id) WHERE deleted_at IS NULL DO UPDATE`
+  against a partial unique index, so two concurrent saves to the same
+  review can never produce two live rows. `GET /admin/reviews/:id/reply`
+  returns `{ reply: null }` with a **200**, not a 404, when nobody has
+  replied yet — that's a normal state, not an error. `DELETE
+  /admin/reviews/:id/reply` removes it; the review can be replied to again
+  afterward.
+- **A reply is visible to shoppers only once its review is approved.**
+  `GET /store/products/:id/reviews` re-derives approval from the reviews
+  table for every reply it returns, the same rule and the same code shape
+  as media visibility — so a reply written against a still-pending or
+  rejected review is invisible on the storefront until (if ever) that
+  review is approved, even though the reply itself was saved successfully
+  the moment the merchant submitted it.
+- **The public author is always the store's name, never the admin user
+  who wrote the reply.** The store route resolves the current store's
+  `name` once per request and attaches it as `author`; the admin user's id
+  is recorded on the row as `replied_by` for audit purposes only and is
+  never present in any response body — not the store route's, and not the
+  admin GET/POST reply routes' either. Do not rely on `replied_by` from
+  the API; it isn't exposed anywhere.
 
 ### Photo and video uploads
 
@@ -306,6 +374,19 @@ See [Roadmap](#roadmap).
   defeats the entire point of a moderator being able to remove offensive
   content. There is no undo; there is also no soft-hide via this route (use
   `hidden_at` for that, once Phase 4 ships curation tooling for it).
+- **The admin media views deliberately show hidden media; the store-facing
+  ones just as deliberately don't.** `GET /admin/reviews/:id/media` and the
+  `media_count` field on each row of `GET /admin/reviews` count and list
+  every non-deleted item, including any with `hidden_at` set. The
+  store-facing equivalents — the `media` array on
+  `GET /store/products/:id/reviews` and its `media_count` in
+  `/store/products/:id/reviews/stats` — exclude hidden items. This is not
+  an inconsistency: a moderator needs to see, and be able to delete, media
+  they (or an earlier moderator) have already hidden, or it becomes
+  unreachable and undeletable through the admin UI; a shopper should never
+  see it at all. In practice this has no visible effect yet, because
+  nothing in Phase 1–3 sets `hidden_at` — it exists on the model today only
+  so Phase 4's curation tooling (pin/hide) has a column to write to.
 - **No video transcoding and no server-generated poster frame in Phase 2.**
   Video is stored exactly as uploaded, and `thumbnail_url` on `review_media`
   is always `null`. Storefronts rendering a video gallery need to supply
@@ -380,8 +461,8 @@ npm test
 |---|---|
 | 0 | Repo bootstrap, CI, release pipeline ✅ |
 | 1 | Core module, settings, moderation, stats ✅ |
-| 2 | Media (images + video), uploads, orphan sweep ✅ ← **you are here** |
-| 3 | Admin UI: queue, detail drawer, replies, settings page |
+| 2 | Media (images + video), uploads, orphan sweep ✅ |
+| 3 | Merchant replies, admin UI: queue, detail drawer, settings page ✅ ← **you are here** |
 | 4 | Helpful votes, gallery API, curation, review editing |
 | 5 | Storefront recipe, JSON-LD, docs |
 | 6 | Hardening, second-host validation, `v0.1.0` to npm |
