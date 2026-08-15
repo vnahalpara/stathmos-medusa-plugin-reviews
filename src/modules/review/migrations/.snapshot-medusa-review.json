@@ -1384,7 +1384,7 @@
           "unsigned": false,
           "autoincrement": false,
           "primary": false,
-          "nullable": false,
+          "nullable": true,
           "unique": false,
           "length": null,
           "precision": null,
@@ -1480,7 +1480,7 @@
           "constraint": false,
           "primary": false,
           "unique": false,
-          "expression": "CREATE UNIQUE INDEX IF NOT EXISTS \"IDX_review_vote_review_id_voter_hash_unique\" ON \"review_vote\" (\"review_id\", \"voter_hash\") WHERE deleted_at IS NULL"
+          "expression": "CREATE UNIQUE INDEX IF NOT EXISTS \"IDX_review_vote_review_id_voter_hash_unique\" ON \"review_vote\" (\"review_id\", \"voter_hash\") WHERE voter_hash IS NOT NULL AND deleted_at IS NULL"
         },
         {
           "keyName": "review_vote_pkey",

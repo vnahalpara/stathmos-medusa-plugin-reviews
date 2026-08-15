@@ -29,5 +29,8 @@ describe('voterHash', () => {
     // @ts-expect-error - exercising the runtime guard for a caller that
     // bypasses the type system (e.g. an untyped config value at runtime).
     expect(() => voterHash('1.2.3.4', 'UA', undefined)).toThrow()
+    // @ts-expect-error - same, for a config value that is explicitly null
+    // rather than merely unset.
+    expect(() => voterHash('1.2.3.4', 'UA', null)).toThrow()
   })
 })
