@@ -1,6 +1,7 @@
 import { createStep, StepResponse } from '@medusajs/framework/workflows-sdk'
 import { MedusaError } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../modules/review'
+import { getReviewSettings } from '../../settings/get-review-settings'
 
 type Input = {
   review_id: string
@@ -19,13 +20,18 @@ type Input = {
  * exists and already blocks a second vote from the same identity, whether
  * or not the counter increment that follows it has run yet).
  *
- * Both checks below run before any row is written, so a refusal here never
+ * All checks below run before any row is written, so a refusal here never
  * leaves anything to compensate:
  *
- *   1. the review must exist - re-derived from the reviews table, not
+ *   1. reviews must be enabled store-wide - same rule, same status, same
+ *      message as GET /store/products/:id/reviews and
+ *      validateReviewSubmissionStep, so a merchant who switches the whole
+ *      feature off gets a consistently dead surface, not one endpoint that
+ *      keeps quietly accumulating votes on content nothing else displays;
+ *   2. the review must exist - re-derived from the reviews table, not
  *      trusted from the route, so a garbage or deleted id 404s instead of
  *      inserting a vote that points at nothing;
- *   2. the review must be `approved` - an unmoderated review must not
+ *   3. the review must be `approved` - an unmoderated review must not
  *      accumulate social proof. If it is later rejected, the votes were
  *      spent on content nobody but the reviewer and staff ever saw. This
  *      is a spec rule Task 1 does not and cannot enforce at the database
@@ -35,6 +41,12 @@ type Input = {
 export const castReviewVoteStep = createStep(
   'cast-review-vote',
   async (input: Input, { container }) => {
+    const settings = await getReviewSettings(container)
+
+    if (!settings.enabled) {
+      throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Reviews are disabled')
+    }
+
     const service = container.resolve(REVIEW_MODULE)
 
     const [review] = await service.listReviews({ id: input.review_id }, { take: 1 })

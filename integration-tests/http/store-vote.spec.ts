@@ -1,5 +1,6 @@
 import { medusaIntegrationTestRunner } from '@medusajs/test-utils'
 import { REVIEW_MODULE } from '../../src/modules/review'
+import { updateReviewSettingsWorkflow } from '../../src/workflows/update-review-settings'
 import { castReviewVoteWorkflow } from '../../src/workflows/vote-review'
 import { createCustomerAuthHeaders, getPublishableKeyHeaders } from '../helpers/store'
 
@@ -11,6 +12,21 @@ medusaIntegrationTestRunner({
 
       beforeAll(async () => {
         storeHeaders = await getPublishableKeyHeaders(getContainer())
+      })
+
+      // Settings resolve through the Cache Module, which the DB-restore-
+      // per-test harness does not reset - same convention as
+      // store-read.spec.ts/store-submit.spec.ts's identical afterEach. Only
+      // the settings.enabled test below flips anything, but this runs
+      // unconditionally so a future test that also flips a setting cannot
+      // leak into the next one by omission.
+      afterEach(async () => {
+        const service = getContainer().resolve(REVIEW_MODULE)
+        const rows = await service.listReviewSettings()
+        if (rows.length) {
+          await service.deleteReviewSettings(rows.map((r) => r.id))
+        }
+        await updateReviewSettingsWorkflow(getContainer()).run({ input: {} })
       })
 
       it('increments helpful_count and creates exactly one vote row, without touching a decoy review voted on first', async () => {
@@ -309,6 +325,62 @@ medusaIntegrationTestRunner({
           .catch((e) => e.response)
 
         expect(response.status).toEqual(404)
+      })
+
+      // Matches GET /store/products/:id/reviews and POST /store/reviews,
+      // both of which already 404 when the feature is switched off store-
+      // wide - a merchant who disables reviews reasonably expects the
+      // whole surface to stop, not one endpoint that keeps accumulating
+      // votes on content nothing else displays.
+      it('404s both casting and withdrawing a vote when reviews are disabled', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        // Cast while the feature is still enabled, so the DELETE
+        // assertion below can prove the gate refuses before
+        // service.withdrawVote() ever runs - the vote must still be
+        // there afterwards, not silently removed as a side effect of the
+        // feature being off.
+        const review = await service.createReviews({
+          product_id: 'prod_vote_disabled_withdraw',
+          display_name: 'Disabled withdraw test',
+          rating: 5,
+          content: 'x'.repeat(10),
+          status: 'approved',
+        })
+
+        const castResponse = await api.post(
+          `/store/reviews/${review.id}/vote`,
+          {},
+          { headers: storeHeaders }
+        )
+        expect(castResponse.status).toEqual(201)
+
+        await updateReviewSettingsWorkflow(container).run({ input: { enabled: false } })
+
+        // A separate, never-voted-on review for the cast-side assertion -
+        // otherwise this identity already having a vote on `review` above
+        // would risk a 409 (already voted) masking whether the enabled
+        // gate ran at all.
+        const otherReview = await service.createReviews({
+          product_id: 'prod_vote_disabled_cast',
+          display_name: 'Disabled cast test',
+          rating: 5,
+          content: 'x'.repeat(10),
+          status: 'approved',
+        })
+
+        const voteResponse = await api
+          .post(`/store/reviews/${otherReview.id}/vote`, {}, { headers: storeHeaders })
+          .catch((e) => e.response)
+        expect(voteResponse.status).toEqual(404)
+        expect(await service.listReviewVotes({ review_id: otherReview.id })).toHaveLength(0)
+
+        const unvoteResponse = await api
+          .delete(`/store/reviews/${review.id}/vote`, { headers: storeHeaders })
+          .catch((e) => e.response)
+        expect(unvoteResponse.status).toEqual(404)
+        expect(await service.listReviewVotes({ review_id: review.id })).toHaveLength(1)
       })
     })
   },

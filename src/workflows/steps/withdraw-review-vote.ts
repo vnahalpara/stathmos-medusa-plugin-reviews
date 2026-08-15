@@ -1,5 +1,7 @@
 import { createStep, StepResponse } from '@medusajs/framework/workflows-sdk'
+import { MedusaError } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../modules/review'
+import { getReviewSettings } from '../../settings/get-review-settings'
 
 type Input = {
   review_id: string
@@ -13,7 +15,15 @@ type Input = {
  * separate atomic statements (service.withdrawVote() then
  * service.adjustHelpfulCount() with delta -1).
  *
- * No existence/approval check on the review itself, unlike
+ * Gated on `settings.enabled` first, same rule/status/message as
+ * castReviewVoteStep and the store read/submit routes - a merchant who
+ * switches reviews off should not be able to un-see a vote disappear on
+ * the one endpoint that kept working. This runs before
+ * service.withdrawVote() ever touches a row, so a vote cast while the
+ * feature was enabled is left exactly as it was, not silently removed as
+ * a side effect of the feature being off.
+ *
+ * No existence/approval check on the review itself beyond that, unlike
  * castReviewVoteStep - deliberately. There is no case where a vote exists
  * on a review that does not exist or was never approved (castVote already
  * refuses both), so service.withdrawVote()'s own "no matching row" ->
@@ -23,6 +33,12 @@ type Input = {
 export const withdrawReviewVoteStep = createStep(
   'withdraw-review-vote',
   async (input: Input, { container }) => {
+    const settings = await getReviewSettings(container)
+
+    if (!settings.enabled) {
+      throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Reviews are disabled')
+    }
+
     const service = container.resolve(REVIEW_MODULE)
 
     // No vote found for this identity/review surfaces as
