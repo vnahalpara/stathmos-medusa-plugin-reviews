@@ -13,5 +13,15 @@ module.exports = defineConfig({
       cookieSecret: process.env.COOKIE_SECRET || 'test',
     },
   },
-  modules: [{ resolve: './src/modules/review' }],
+  modules: [
+    {
+      resolve: './src/modules/review',
+      // Cascades to the review module service's constructor as its
+      // `options` argument - see src/modules/review/service.ts and
+      // src/settings/vote-salt.ts for the resolution precedence and why an
+      // absent REVIEW_VOTE_SALT resolves to undefined rather than a
+      // hardcoded default.
+      options: { voteSalt: process.env.REVIEW_VOTE_SALT },
+    },
+  ],
 })

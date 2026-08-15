@@ -186,4 +186,20 @@ export const storeReviewMiddlewares: MiddlewareRoute[] = [
     method: 'POST',
     middlewares: [uploadReviewMediaFiles],
   },
+  {
+    matcher: '/store/reviews/:id/vote',
+    method: 'POST',
+    // Same allowUnauthenticated reasoning as POST /store/reviews above: a
+    // guest must reach the route handler too (voting is not
+    // customer-only), but a customer session/bearer token IS present when
+    // sent, which is what lets the route dedup by customer_id instead of
+    // computing a voter_hash for someone Task 1's review proved must never
+    // get one. No body, so no Zod schema/validateAndTransformBody.
+    middlewares: [authenticate('customer', ['session', 'bearer'], { allowUnauthenticated: true })],
+  },
+  {
+    matcher: '/store/reviews/:id/vote',
+    method: 'DELETE',
+    middlewares: [authenticate('customer', ['session', 'bearer'], { allowUnauthenticated: true })],
+  },
 ]

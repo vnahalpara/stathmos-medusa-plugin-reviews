@@ -13,6 +13,7 @@ import { ReviewStats } from './models/review-stats'
 import { ReviewMedia } from './models/review-media'
 import { ReviewReply } from './models/review-reply'
 import { ReviewVote } from './models/review-vote'
+import { resolveVoteSalt, ReviewModuleOptions } from '../../settings/vote-salt'
 
 // The only two EntityManager methods this module needs for a raw
 // conditional UPDATE - narrowly typed locally rather than importing
@@ -32,6 +33,50 @@ class ReviewModuleService extends MedusaService({
   ReviewReply,
   ReviewVote,
 }) {
+  /**
+   * The salt voterHash() needs to turn a guest's IP+UA into a per-store
+   * pseudonymous dedup key - resolution precedence (plugin options over
+   * `REVIEW_VOTE_SALT`) and the "why undefined, never a hardcoded default"
+   * reasoning both live in resolveVoteSalt()'s docstring
+   * (src/settings/vote-salt.ts).
+   *
+   * `options` is this constructor's second argument because a module's own
+   * top-level service is instantiated as `new moduleService(container,
+   * resolution.options, resolution.moduleDeclaration)` -
+   * @medusajs/modules-sdk's loadModuleResources does this for every module,
+   * not only ones with a `providers` array. `resolution.options` is
+   * whatever this module was registered with: `modules: [{ resolve:
+   * './src/modules/review', options }]` in medusa-config.ts directly, or,
+   * for a real npm install of this plugin, cascaded unchanged from a
+   * host's `plugins: [{ resolve: '@stathmos/medusa-plugin-reviews',
+   * options }]` by @medusajs/utils's getResolvedPlugins() (every module a
+   * plugin declares receives that same top-level `options` object - this
+   * plugin only declares one, so there is no namespacing to worry about).
+   */
+  private readonly voteSalt_: string | undefined
+
+  constructor(container: Record<string, unknown>, options?: ReviewModuleOptions) {
+    super(container)
+    this.voteSalt_ = resolveVoteSalt(options)
+  }
+
+  /**
+   * Never throws for a missing salt - only a guest vote's call to
+   * voterHash() actually needs one (a signed-in customer's vote never
+   * calls it at all, see cast-review-vote.ts), so a store that only
+   * expects authenticated voters must not be broken by a salt nobody
+   * configured. The "fail loudly rather than silently default" guarantee
+   * lives in voterHash() itself, not here - it raises a MedusaError the
+   * moment an empty/undefined salt actually reaches it.
+   *
+   * `async` purely to satisfy this codebase's lint rule that every public
+   * service method be async - there is no I/O here, `voteSalt_` was
+   * already resolved once in the constructor.
+   */
+  async getVoteSalt(): Promise<string | undefined> {
+    return this.voteSalt_
+  }
+
   /**
    * Atomically claims not-yet-attached review_media rows for a review, via
    * a single conditional `UPDATE ... WHERE review_id IS NULL`, issued
@@ -236,6 +281,203 @@ class ReviewModuleService extends MedusaService({
       updated_at: row.updated_at,
       created: row.inserted,
     }
+  }
+
+  /**
+   * Inserts one review_vote row via a plain INSERT, issued through this
+   * module's own EntityManager/connection (same reasoning as
+   * claimMediaForReview() above - never a connection resolved from the app
+   * container). Unlike claimMediaForReview()/upsertReviewReply(), a plain
+   * INSERT has no read-then-write race to close: there is no existing row
+   * to find first, so Task 1's two partial unique indexes are the only
+   * thing that needs to adjudicate concurrent votes, and Postgres already
+   * does that atomically for a single INSERT with no help needed here.
+   *
+   * Raw SQL rather than `this.createReviewVotes()` (the generated method)
+   * for exactly one reason: catching the failure. A unique-index violation
+   * from a raw `knex.raw INSERT` surfaces as a driver error with a stable
+   * `.code === '23505'` (see PostgreSqlExceptionConverter), which this
+   * method catches and translates into a MedusaError itself - see below.
+   * `createReviewVotes()` goes through MikroORM's repository layer first,
+   * which may or may not finish that translation for us depending on
+   * whether it can parse a constraint name out of the driver error's
+   * `.detail` (@medusajs/utils's dbErrorMapper) - relying on that would
+   * make this method's error contract depend on an implementation detail
+   * of a layer this plugin does not own.
+   *
+   * Exactly one of `customer_id`/`voter_hash` must be set and the other
+   * null - the caller (cast-review-vote.ts) is responsible for that
+   * invariant; this method does not re-derive or enforce it beyond what
+   * Task 1's two partial unique indexes already guarantee at the database
+   * level.
+   */
+  @InjectManager()
+  async castVote(
+    input: { review_id: string; customer_id: string | null; voter_hash: string | null },
+    @MedusaContext() context: Context<ReviewMediaManager> = {}
+  ): Promise<{
+    id: string
+    review_id: string
+    customer_id: string | null
+    voter_hash: string | null
+    created_at: Date
+  }> {
+    const manager = context.manager
+
+    if (!manager) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        'castVote requires a manager from the review module context.'
+      )
+    }
+
+    const knex = manager.getTransactionContext() ?? manager.getKnex()
+    const now = new Date()
+
+    try {
+      const { rows } = await knex.raw(
+        `insert into "review_vote" ("id", "review_id", "customer_id", "voter_hash", "created_at", "updated_at")
+         values (?, ?, ?, ?, ?, ?)
+         returning "id", "review_id", "customer_id", "voter_hash", "created_at"`,
+        [
+          generateEntityId(undefined, 'rvot'),
+          input.review_id,
+          input.customer_id,
+          input.voter_hash,
+          now,
+          now,
+        ]
+      )
+
+      return rows[0] as {
+        id: string
+        review_id: string
+        customer_id: string | null
+        voter_hash: string | null
+        created_at: Date
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code === '23505') {
+        throw new MedusaError(
+          MedusaError.Types.CONFLICT,
+          'You have already voted this review as helpful.'
+        )
+      }
+
+      throw error
+    }
+  }
+
+  /**
+   * Hard-deletes the caller's own vote on a review, in one conditional
+   * DELETE ... RETURNING rather than a SELECT to find it followed by a
+   * delete by id - the same "let the database adjudicate in one statement"
+   * reasoning as deleteUnattachedMedia() above. A find-then-delete here
+   * would let two concurrent unvote requests for the same identity both
+   * read "a vote exists", both delete it (the second deleting nothing but
+   * not knowing that), and both tell their caller's step to decrement
+   * `helpful_count` - double-decrementing a counter that only one vote ever
+   * incremented. RETURNING tells the caller definitively whether a row was
+   * actually removed.
+   *
+   * Deliberately a hard delete (spec §4): a soft-deleted row would still
+   * satisfy Task 1's partial unique indexes' `deleted_at IS NULL`
+   * predicate being false, which excludes it from the index rather than
+   * freeing the slot outright - a hard delete is what lets the same
+   * identity vote again afterwards without the row ever being useful to
+   * keep around. Mirrors deleteReviewReplyStep's identical reasoning.
+   *
+   * Exactly one of `customer_id`/`voter_hash` identifies the caller - never
+   * both, same invariant as castVote() above - so the WHERE clause matches
+   * on whichever one is set.
+   */
+  @InjectManager()
+  async withdrawVote(
+    input: { review_id: string; customer_id: string | null; voter_hash: string | null },
+    @MedusaContext() context: Context<ReviewMediaManager> = {}
+  ): Promise<{
+    id: string
+    review_id: string
+    customer_id: string | null
+    voter_hash: string | null
+  }> {
+    const manager = context.manager
+
+    if (!manager) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        'withdrawVote requires a manager from the review module context.'
+      )
+    }
+
+    const knex = manager.getTransactionContext() ?? manager.getKnex()
+
+    const identity = input.customer_id
+      ? { customer_id: input.customer_id }
+      : { voter_hash: input.voter_hash }
+
+    const deleted: {
+      id: string
+      review_id: string
+      customer_id: string | null
+      voter_hash: string | null
+    }[] = await knex('review_vote')
+      .where({ review_id: input.review_id, ...identity })
+      .whereNull('deleted_at')
+      .del()
+      .returning(['id', 'review_id', 'customer_id', 'voter_hash'])
+
+    if (!deleted.length) {
+      throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Vote not found')
+    }
+
+    return deleted[0]
+  }
+
+  /**
+   * THE only place `review.helpful_count` may be written. A single
+   * conditional `UPDATE ... increment` issued through this module's own
+   * EntityManager/connection - same atomicity reasoning as
+   * claimMediaForReview() above, and for the same kind of reason: this
+   * codebase has already lost concurrent increments twice to a
+   * listReviews() -> `+1` in JS -> updateReviews() read-then-write, and
+   * fixed it both times by moving to a single atomic statement. Never
+   * reintroduce that shape for this counter.
+   *
+   * `delta` is signed rather than this being two methods
+   * (incrementHelpfulCount/decrementHelpfulCount) because cast and
+   * withdraw are otherwise identical callers - one atomic statement either
+   * way, `+1` or `-1` - and their respective step compensations need the
+   * exact same call shape in reverse.
+   *
+   * Returns the row's new count via the same UPDATE's RETURNING clause -
+   * still one statement, not a second read - so callers (the vote route)
+   * can report an authoritative fresh count without an extra round trip.
+   */
+  @InjectManager()
+  async adjustHelpfulCount(
+    reviewId: string,
+    delta: number,
+    @MedusaContext() context: Context<ReviewMediaManager> = {}
+  ): Promise<number> {
+    const manager = context.manager
+
+    if (!manager) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        'adjustHelpfulCount requires a manager from the review module context.'
+      )
+    }
+
+    const knex = manager.getTransactionContext() ?? manager.getKnex()
+
+    const updated: { helpful_count: number }[] = await knex('review')
+      .where({ id: reviewId })
+      .whereNull('deleted_at')
+      .increment('helpful_count', delta)
+      .returning('helpful_count')
+
+    return updated[0]?.helpful_count ?? 0
   }
 
   /**

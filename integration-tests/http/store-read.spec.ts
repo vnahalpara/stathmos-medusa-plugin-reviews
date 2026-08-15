@@ -2,6 +2,7 @@ import { medusaIntegrationTestRunner } from '@medusajs/test-utils'
 import { REVIEW_MODULE } from '../../src/modules/review'
 import { recomputeReviewStats } from '../../src/workflows/steps/recompute-review-stats'
 import { updateReviewSettingsWorkflow } from '../../src/workflows/update-review-settings'
+import { castReviewVoteWorkflow } from '../../src/workflows/vote-review'
 import { getPublishableKeyHeaders } from '../helpers/store'
 
 medusaIntegrationTestRunner({
@@ -104,6 +105,57 @@ medusaIntegrationTestRunner({
         })
 
         expect(response.data.reviews[0].rating).toEqual(5)
+      })
+
+      // most_helpful has existed since Phase 1, but every review's
+      // helpful_count sat at its default 0 until Task 2 shipped a real way
+      // to move it - so this sort was never actually testable against a
+      // counter with distinct values before now. Votes are cast through
+      // castReviewVoteWorkflow (the same production code path the store
+      // vote route runs), not a hand-set helpful_count column, so this
+      // proves the sort against the real counter, not a fake one.
+      it('sorts by helpful_count when sort=most_helpful, exercised via real votes', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        // Created and would sort first under `newest` (the default) or
+        // any created_at-based tiebreak - proving the assertion below
+        // actually exercises the most_helpful comparator, not insertion
+        // order.
+        const decoy = await service.createReviews({
+          product_id: 'prod_most_helpful',
+          display_name: 'Decoy',
+          rating: 5,
+          content: 'x'.repeat(10),
+          status: 'approved',
+        })
+
+        const underVoted = await service.createReviews({
+          product_id: 'prod_most_helpful',
+          display_name: 'Under-voted',
+          rating: 4,
+          content: 'x'.repeat(10),
+          status: 'approved',
+        })
+
+        await castReviewVoteWorkflow(container).run({
+          input: { review_id: underVoted.id, customer_id: 'cus_most_helpful_a', voter_hash: null },
+        })
+        await castReviewVoteWorkflow(container).run({
+          input: { review_id: underVoted.id, customer_id: 'cus_most_helpful_b', voter_hash: null },
+        })
+
+        const response = await api.get(
+          '/store/products/prod_most_helpful/reviews?sort=most_helpful',
+          { headers: storeHeaders }
+        )
+
+        expect(response.data.reviews.map((r: { id: string }) => r.id)).toEqual([
+          underVoted.id,
+          decoy.id,
+        ])
+        expect(response.data.reviews[0].helpful_count).toEqual(2)
+        expect(response.data.reviews[1].helpful_count).toEqual(0)
       })
 
       it('404s when reviews are disabled', async () => {
