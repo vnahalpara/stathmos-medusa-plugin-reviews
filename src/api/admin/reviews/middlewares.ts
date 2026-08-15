@@ -54,6 +54,23 @@ export const ReplyToReviewSchema = z
 
 export type ReplyToReviewInput = z.infer<typeof ReplyToReviewSchema>
 
+export const CurateMediaSchema = z
+  .object({
+    pinned: z.boolean().optional(),
+    hidden: z.boolean().optional(),
+  })
+  .strict()
+  // An empty `{}` (or a body with neither field) is a 400, not a silent
+  // no-op that reports success back to a moderator who thinks they
+  // curated something - see set-media-curation.ts's own step for what
+  // "neither field given" means once past this gate (it means it can
+  // never happen; the step never has to handle it).
+  .refine((data) => data.pinned !== undefined || data.hidden !== undefined, {
+    message: 'At least one of `pinned` or `hidden` is required',
+  })
+
+export type CurateMediaSchema = z.infer<typeof CurateMediaSchema>
+
 const toInt = (val: unknown) => (typeof val === 'string' ? parseInt(val, 10) : val)
 
 export const ListAdminReviewsSchema = z
@@ -100,5 +117,10 @@ export const adminReviewMiddlewares: MiddlewareRoute[] = [
     matcher: '/admin/reviews/:id/reply',
     method: 'POST',
     middlewares: [validateAndTransformBody(ReplyToReviewSchema)],
+  },
+  {
+    matcher: '/admin/reviews/media/:id/curation',
+    method: 'POST',
+    middlewares: [validateAndTransformBody(CurateMediaSchema)],
   },
 ]
