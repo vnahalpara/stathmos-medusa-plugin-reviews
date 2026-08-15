@@ -23,7 +23,7 @@
 - Migrations: `npx medusa plugin:db:generate`. Read every generated migration before committing.
 - **All list endpoints cap `limit` at 100 (default 20) and reject larger values.** An uncapped limit on the global gallery is a free denial-of-service (spec §5).
 - Settings values are duplicated by hand in three places — the model, `src/modules/review/settings-defaults.ts`, and `UpdateReviewSettingsSchema` — and any settings write must call `invalidateReviewSettings`.
-- Test commands: `npm run test:unit`, `npm run test:integration` (NODE_OPTIONS already carries `--expose-gc --max-old-space-size=8192`; both flags are load-bearing), `npm run lint`, `npm run typecheck`, `npm run build`.
+- Test commands: `npm run test:unit`, `npm run test:integration`, `npm run lint`, `npm run typecheck`, `npm run build`. The integration runner uses two Jest workers with `--workerIdleMemoryLimit=1500M` and `--expose-gc`; **do not add `--max-old-space-size` back** — raising the ceiling is what failed twice, worker recycling is what fixed it (see the ledger's Tasks 5+6 entry).
 - **Baseline entering Phase 4: 154 integration (31 suites) / 62 unit.**
 
 ## Standing instruction carried from Phase 3
