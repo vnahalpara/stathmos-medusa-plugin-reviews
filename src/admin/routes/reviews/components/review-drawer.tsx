@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { EyeSlashMini, PlaySolid, Trash } from '@medusajs/icons'
+import { EyeSlashMini, PinTackSolid, PlaySolid, Trash } from '@medusajs/icons'
 import { Badge, Button, Drawer, Heading, IconButton, Prompt, Text, Textarea, toast } from '@medusajs/ui'
 import { sdk } from '../../../lib/sdk'
 import { formatStars } from '../../../lib/format'
@@ -69,7 +69,12 @@ const DetailField = ({ label, value, mono = false }: { label: string; value: str
  * The lightbox and the media strip both mark hidden items visibly (a
  * small "Hidden from shoppers" badge) rather than showing a hidden photo
  * indistinguishably from a visible one - a moderator needs to know which
- * is which before deciding whether to also un-hide or delete it.
+ * is which before deciding whether to also un-hide or delete it. Task 6
+ * adds the same treatment for `pinned_at` and adds `curateMediaMutation`
+ * (Pin/Unpin, Hide/Unhide from the lightbox) alongside it - see that
+ * mutation's own top comment for why its cache key is built from
+ * `variables`, not from `review`/`liveReview` the way this file's other
+ * mutations read `review` at click time but never inside `onSuccess`.
  *
  * ## No cross-review state leaks (the Task 8 bug, one layer up)
  * Task 8 shipped a bug where `rowSelection` outlived a tab/search change
@@ -227,6 +232,84 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
     },
   })
 
+  // Task 6: Pin/Unpin and Hide/Unhide from the lightbox, through Task 5's
+  // POST /admin/reviews/media/:id/curation.
+  //
+  // Variables carry `reviewId` explicitly (not just the media `id`) so
+  // this mutation's callback can build its cache key from `variables`,
+  // never from the closed-over `review`/`liveReview` state - the exact bug
+  // class reply-composer.tsx's top comment documents at length ("Why
+  // mutation callbacks read `variables`"): MediaLightbox has no `key` and
+  // stays mounted across a review switch (it is rendered unconditionally
+  // at the bottom of this component, same as ReplyComposer), so React
+  // Query re-points a still-pending mutation's onSuccess at whatever
+  // review is open at the LATEST render, not the one open when `.mutate()`
+  // was called. Curate a photo on review A, switch to review B before the
+  // request settles, and a closure-based key would write A's curation
+  // result into B's cache entry - silently attributing a curation change
+  // to the wrong review's media strip.
+  const curateMediaMutation = useMutation({
+    mutationFn: ({
+      id,
+      pinned,
+      hidden,
+    }: {
+      id: string
+      reviewId: string
+      pinned?: boolean
+      hidden?: boolean
+    }) =>
+      sdk.client.fetch<{
+        media: { id: string; pinned_at: string | null; hidden_at: string | null }
+      }>(`/admin/reviews/media/${id}/curation`, {
+        method: 'POST',
+        body: { pinned, hidden },
+      }),
+    onSuccess: (response, variables) => {
+      // Built from `variables.reviewId`, per this mutation's own top
+      // comment - always correct for the review the request was actually
+      // made against, even if the merchant has since navigated away.
+      const key = ['admin-review-media', variables.reviewId] as const
+      queryClient.setQueryData<{ media: ReviewMediaItem[] }>(key, (prev) =>
+        prev
+          ? {
+              media: prev.media.map((item) =>
+                item.id === variables.id
+                  ? {
+                      ...item,
+                      pinned_at: response.media.pinned_at,
+                      hidden_at: response.media.hidden_at,
+                    }
+                  : item
+              ),
+            }
+          : prev
+      )
+      queryClient.invalidateQueries({ queryKey: key })
+      // media_count is unaffected by curation (pin/hide never changes how
+      // many rows are attached), but the table's own columns don't depend
+      // on curation state either - this matches deleteMediaMutation's
+      // "always invalidate the table too" posture rather than trying to
+      // reason about whether this particular change is visible there.
+      invalidateTable()
+
+      const label =
+        variables.hidden !== undefined
+          ? variables.hidden
+            ? 'Media hidden from shoppers'
+            : 'Media made visible again'
+          : variables.pinned
+            ? 'Media pinned to the gallery'
+            : 'Media unpinned from the gallery'
+      toast.success(label)
+    },
+    onError: (error) => {
+      toast.error('Failed to update media curation', {
+        description: error instanceof Error ? error.message : undefined,
+      })
+    },
+  })
+
   const isMutating = approveMutation.isPending || rejectMutation.isPending
 
   const openRejectPrompt = () => {
@@ -269,6 +352,27 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
     if (mediaPendingDelete) {
       deleteMediaMutation.mutate(mediaPendingDelete.id)
     }
+  }
+
+  // Both read `review` (the prop), not `liveReview` - same reasoning as
+  // handleApprove above. Toggling off the item's OWN current pinned_at/
+  // hidden_at (not tracking separate local state for "which way to
+  // toggle") is safe because `item` always comes from mediaItems, which is
+  // itself derived from mediaQuery's cache - the same cache
+  // curateMediaMutation's onSuccess updates, so a second click always
+  // reads the outcome of the first.
+  const handlePinToggle = (item: ReviewMediaItem) => {
+    if (!review) {
+      return
+    }
+    curateMediaMutation.mutate({ id: item.id, reviewId: review.id, pinned: !item.pinned_at })
+  }
+
+  const handleHideToggle = (item: ReviewMediaItem) => {
+    if (!review) {
+      return
+    }
+    curateMediaMutation.mutate({ id: item.id, reviewId: review.id, hidden: !item.hidden_at })
   }
 
   return (
@@ -391,6 +495,14 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
                               <EyeSlashMini className="text-ui-fg-subtle" />
                             </div>
                           )}
+                          {item.pinned_at && (
+                            <div
+                              className="bg-ui-bg-base border-ui-border-base absolute bottom-0 right-0 flex items-center rounded-tl-md border-l border-t p-0.5"
+                              title="Pinned to gallery"
+                            >
+                              <PinTackSolid className="text-ui-fg-subtle" />
+                            </div>
+                          )}
                           <IconButton
                             size="2xsmall"
                             variant="transparent"
@@ -502,6 +614,9 @@ const ReviewDrawer = ({ review, onClose }: ReviewDrawerProps) => {
         onOpenChange={setLightboxIndex}
         onDeleteRequest={handleDeleteRequest}
         isDeleting={deleteMediaMutation.isPending}
+        onPinToggleRequest={handlePinToggle}
+        onHideToggleRequest={handleHideToggle}
+        isCurating={curateMediaMutation.isPending}
       />
     </>
   )
