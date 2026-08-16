@@ -451,7 +451,7 @@ const ReviewSettingsPage = () => {
             />
             <ToggleRow
               label="Enable product photo gallery"
-              help="Reserved for a store-wide customer photo gallery that has not shipped yet, so this setting has no visible effect on the storefront today - including the photos already shown on individual reviews, which are controlled by the photo and video settings above, not this one."
+              help="Serves the customer photo and video gallery at GET /store/reviews/gallery, either for one product or across the whole store. Only media on approved reviews appears, pinned items first; hidden items never appear. Switching this off makes that endpoint return 404 - it does NOT affect the photos shown on individual reviews, which the photo and video settings above control."
               checked={draft.booleans.gallery_enabled}
               onCheckedChange={(value) => setBoolean('gallery_enabled', value)}
               disabled={controlsDisabled}
