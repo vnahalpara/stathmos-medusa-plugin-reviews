@@ -114,26 +114,34 @@ medusaIntegrationTestRunner({
       // castReviewVoteWorkflow (the same production code path the store
       // vote route runs), not a hand-set helpful_count column, so this
       // proves the sort against the real counter, not a fake one.
+      //
+      // The decoy is seeded SECOND, so it is the newer row and sorts
+      // FIRST under the route's `created_at DESC` fallback (ORDER_BY.newest)
+      // - the standing rule that a decoy must be the row an unfiltered
+      // query would return first. If most_helpful ever silently degraded
+      // to that fallback, the response would come back [decoy, underVoted]
+      // and the assertion below would fail, instead of passing by luck of
+      // insertion order.
       it('sorts by helpful_count when sort=most_helpful, exercised via real votes', async () => {
         const container = getContainer()
         const service = container.resolve(REVIEW_MODULE)
-
-        // Created and would sort first under `newest` (the default) or
-        // any created_at-based tiebreak - proving the assertion below
-        // actually exercises the most_helpful comparator, not insertion
-        // order.
-        const decoy = await service.createReviews({
-          product_id: 'prod_most_helpful',
-          display_name: 'Decoy',
-          rating: 5,
-          content: 'x'.repeat(10),
-          status: 'approved',
-        })
 
         const underVoted = await service.createReviews({
           product_id: 'prod_most_helpful',
           display_name: 'Under-voted',
           rating: 4,
+          content: 'x'.repeat(10),
+          status: 'approved',
+        })
+
+        // Created AFTER underVoted, so it is strictly newer and would
+        // sort FIRST under `created_at DESC` alone - proving the
+        // assertion below actually exercises the most_helpful comparator,
+        // not insertion order.
+        const decoy = await service.createReviews({
+          product_id: 'prod_most_helpful',
+          display_name: 'Decoy',
+          rating: 5,
           content: 'x'.repeat(10),
           status: 'approved',
         })
