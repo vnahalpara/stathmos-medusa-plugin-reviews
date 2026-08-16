@@ -213,7 +213,7 @@ bundled admin UI's settings page (Settings → Reviews) exposes all 14.
 | `max_media_per_review` | `5` | 0–20. |
 | `max_image_size_mb` | `5` | 1–50. |
 | `max_video_size_mb` | `50` | 1–100. **Values above 100 have no effect.** Uploads are capped at 100MB per file at the transport layer regardless of what this is set to — see [Photo and video uploads](#photo-and-video-uploads). |
-| `allow_edit` | `true` | Lets a signed-in customer edit their own review's rating, title and content after submitting it — see [Review editing](#review-editing). Guests can never edit, regardless of this setting. Defaults to `true` as of Phase 4; it shipped `false` and non-interactive in Phases 1–3, specifically because the edit flow did not exist yet. |
+| `allow_edit` | `true` | Lets a signed-in customer edit their own review's rating, title and content after submitting it — see [Review editing](#review-editing). Guests can never edit, regardless of this setting. **The `true` default applies only to a fresh install that has never saved a settings row.** `mergeSettings()` copies a stored value over the new default, so a store that saved settings at any point before Phase 4 keeps its stored `false` and must switch this on itself in Settings → Reviews to enable editing. This is the safe outcome, not an oversight: it is exactly what keeps the riskier `allow_edit: true` + `require_approval: false` pairing from ever appearing silently on an upgrade — that pairing can only exist because a merchant explicitly turned both settings on. |
 | `one_review_per_customer` | `true` | A signed-in customer may submit only one review per product. |
 | `min_content_length` | `10` | 0–1000. |
 | `max_content_length` | `5000` | 1–20000. |

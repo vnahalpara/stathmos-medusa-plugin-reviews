@@ -56,11 +56,18 @@ rejection is a specific moderator judgment that a store-wide auto-approval
 policy must never be allowed to silently overturn. `title: null` clears a
 title, media survives an edit, and `edited_at` is set.
 
-**`allow_edit` now defaults to `true`.** It shipped `false`, and
-non-interactive in the settings UI, in Phases 1–3 specifically because the
-edit flow did not exist yet. `gallery_enabled` now actually gates `GET
-/store/reviews/gallery`, where in Phases 1–3 it existed in the settings
-schema but affected nothing. See the README's
+**`allow_edit` now defaults to `true` — but only for a fresh install that
+has never saved a settings row.** It shipped `false`, and non-interactive
+in the settings UI, in Phases 1–3 specifically because the edit flow did
+not exist yet. `mergeSettings()` copies a stored settings value over the
+new default, so any store that has saved settings at any point before this
+release keeps its stored `false` and must switch `allow_edit` on itself in
+Settings → Reviews. This is the safe outcome, not an oversight: it is what
+prevents the riskier `allow_edit: true` + `require_approval: false`
+pairing from ever appearing silently on upgrade — a store only ends up
+with that pairing by explicitly turning both settings on. `gallery_enabled`
+now actually gates `GET /store/reviews/gallery`, where in Phases 1–3 it
+existed in the settings schema but affected nothing. See the README's
 [Admin settings](README.md#admin-settings) table for both.
 
 **Known limitation:** guest vote de-duplication (`voter_hash`) is
