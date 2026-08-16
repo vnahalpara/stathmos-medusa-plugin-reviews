@@ -66,6 +66,7 @@ export const REVIEW_WORKFLOW_EVENTS = [
   'review.rejected',
   'review.updated',
   'review.media.curated',
+  'review.media.deleted',
   'review.reply.created',
   'review.reply.updated',
   'review.settings.updated',

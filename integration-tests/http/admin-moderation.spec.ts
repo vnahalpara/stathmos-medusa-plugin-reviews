@@ -141,6 +141,45 @@ medusaIntegrationTestRunner({
       emitSpy.mockRestore()
     })
 
+    /**
+     * Returning a review to the queue is NOT a rejection, and this asserts
+     * the absence, because the bug being pinned here is a wrong event
+     * firing rather than a missing one. The mapping used to be
+     * `status === 'approved' ? 'review.approved' : 'review.rejected'`, so
+     * a moderator who merely wanted a second look at a review announced a
+     * rejection to every subscriber. Revalidation could not tell the
+     * difference - both take the review off the storefront - but a
+     * notification subscriber would have emailed a real customer that
+     * their review was rejected, and that cannot be recalled.
+     *
+     * `toEqual` on the whole filtered list is what makes this a real test:
+     * `review.rejected` is in REVIEW_WORKFLOW_EVENTS, so if it fired
+     * alongside (or instead of) `review.updated`, this fails.
+     */
+    it('moderating back to pending emits review.updated and never review.rejected', async () => {
+      const container = getContainer()
+      const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+      await api.post(`/admin/reviews/${reviewId}/approve`, {}, adminHeaders)
+      emitSpy.mockClear()
+
+      const response = await api.post(
+        '/admin/reviews/batch/status',
+        { ids: [reviewId], status: 'pending' },
+        adminHeaders
+      )
+      expect(response.status).toEqual(200)
+
+      expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+        {
+          name: 'review.updated',
+          data: { ids: [reviewId], product_ids: ['prod_mod'] },
+        },
+      ])
+
+      emitSpy.mockRestore()
+    })
+
     it('lists pending reviews for the queue', async () => {
       // Seed reviews of differing statuses so the assertion below can only
       // pass if the status filter is actually applied - with a single

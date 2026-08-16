@@ -13,6 +13,30 @@ export type ModerateReviewsInput = {
   rejection_reason?: string | null
 }
 
+/**
+ * One event per destination status, and `pending` is NOT a rejection.
+ *
+ * This used to be `status === 'approved' ? 'review.approved' : 'review.rejected'`,
+ * which meant returning a review to the queue for a second look announced
+ * itself as a rejection. For cache invalidation that was harmless - both
+ * take the review off the storefront - which is exactly why it survived.
+ * For any other subscriber it is a false statement about what a moderator
+ * did, and the events this plugin emits are what v2's notification emails
+ * are meant to subscribe to: a customer would be emailed "your review was
+ * rejected" because a moderator wanted to re-read it. A wrong message to a
+ * real person cannot be taken back, unlike a stale page.
+ *
+ * `review.updated` is the honest name for it - the review changed and left
+ * the storefront, nobody judged it - and it is already subscribed for
+ * revalidation and already carries a product id, so invalidation keeps
+ * working unchanged.
+ */
+const EVENT_BY_STATUS = {
+  approved: 'review.approved',
+  rejected: 'review.rejected',
+  pending: 'review.updated',
+} as const
+
 export const moderateReviewsWorkflow = createWorkflow(
   'moderate-reviews',
   function (input: ModerateReviewsInput) {
@@ -44,7 +68,7 @@ export const moderateReviewsWorkflow = createWorkflow(
     // the reviews it was just told about purely to learn their products.
     emitEventStep(
       transform({ input, result }, (data) => ({
-        eventName: data.input.status === 'approved' ? 'review.approved' : 'review.rejected',
+        eventName: EVENT_BY_STATUS[data.input.status],
         data: { ids: data.input.ids, product_ids: data.result.product_ids },
       }))
     )

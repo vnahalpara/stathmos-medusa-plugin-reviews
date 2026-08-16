@@ -9,6 +9,7 @@ import { updateReviewSettingsWorkflow } from '../../src/workflows/update-review-
 import { deleteReviewMediaWorkflow } from '../../src/workflows/delete-review-media'
 import { createAdminUser, adminHeaders } from '../helpers/admin'
 import { getPublishableKeyHeaders } from '../helpers/store'
+import { emittedEvents, REVIEW_WORKFLOW_EVENTS } from '../helpers/events'
 
 async function pngBase64(background: string): Promise<string> {
   const buf = await sharp({ create: { width: 4, height: 4, channels: 3, background } })
@@ -26,6 +27,15 @@ medusaIntegrationTestRunner({
       await updateReviewSettingsWorkflow(getContainer()).run({
         input: { allow_guest: true },
       })
+    })
+
+    // Not optional bookkeeping: a test that fails before its own
+    // `mockRestore()` leaves the event bus spied, and the next test's spy
+    // then stacks on top of it - turning one real failure into two
+    // confusing ones. Observed while red/green-checking these tests.
+    // Matches admin-reply.spec.ts and admin-media-curation.spec.ts.
+    afterEach(() => {
+      jest.restoreAllMocks()
     })
 
     it('removes one offensive photo without rejecting the review', async () => {
@@ -164,6 +174,97 @@ medusaIntegrationTestRunner({
       // The review itself is untouched by this failed cleanup attempt.
       const [stillThere] = await service.listReviews({ id: review.id })
       expect(stillThere.status).toEqual('pending')
+    })
+
+    /**
+     * Deleting a photo is the more final half of the pair curation began.
+     * Hiding one is revalidated the instant a moderator acts; destroying
+     * one - the action taken when an image must never be served again -
+     * had no event at all, so a host's cache kept serving it for a full
+     * stale-while-revalidate window. Same payload shape as
+     * `review.media.curated`, so a host writes one subscriber for both.
+     *
+     * The decoy is the same one the curation event needed: a second review
+     * on a DIFFERENT product, seeded first, so a delete step that resolved
+     * "some review" instead of "this media's review" emits the decoy's
+     * product id and fails here. `review_id` is asserted too - it is the
+     * only trace of the parent left once the row is gone.
+     */
+    it("emits review.media.deleted carrying the deleted media's own product_id", async () => {
+      const container = getContainer()
+      const content = await pngBase64('#222222')
+
+      const { result: decoyUpload } = await uploadReviewMediaWorkflow(container).run({
+        input: { files: [{ filename: 'decoy.png', content, size_bytes: 100 }] },
+      })
+      await createReviewWorkflow(container).run({
+        input: {
+          product_id: 'prod_media_deleted_decoy',
+          rating: 1,
+          content: 'x'.repeat(20),
+          display_name: 'Decoy',
+          media_ids: decoyUpload.media.map((m) => m.id),
+        },
+      })
+
+      const { result: uploaded } = await uploadReviewMediaWorkflow(container).run({
+        input: { files: [{ filename: 'target.png', content, size_bytes: 100 }] },
+      })
+      const { result: review } = await createReviewWorkflow(container).run({
+        input: {
+          product_id: 'prod_media_deleted',
+          rating: 5,
+          content: 'x'.repeat(20),
+          display_name: 'Ada',
+          media_ids: uploaded.media.map((m) => m.id),
+        },
+      })
+
+      const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+      const response = await api.delete(
+        `/admin/reviews/media/${uploaded.media[0].id}`,
+        adminHeaders
+      )
+      expect(response.status).toEqual(200)
+
+      expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+        {
+          name: 'review.media.deleted',
+          data: {
+            id: uploaded.media[0].id,
+            review_id: review.id,
+            product_id: 'prod_media_deleted',
+          },
+        },
+      ])
+
+      emitSpy.mockRestore()
+    })
+
+    it('emits nothing when deleting media that was never attached to a review', async () => {
+      // An abandoned upload: no review, so no product page has ever shown
+      // it and there is no cache to invalidate. Same guard as curation.
+      const container = getContainer()
+
+      const { result: uploaded } = await uploadReviewMediaWorkflow(container).run({
+        input: {
+          files: [{ filename: 'orphan.png', content: await pngBase64('#333333'), size_bytes: 100 }],
+        },
+      })
+
+      const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+      const response = await api.delete(
+        `/admin/reviews/media/${uploaded.media[0].id}`,
+        adminHeaders
+      )
+
+      // Deleted all the same - the guard is on the event, not the write.
+      expect(response.status).toEqual(200)
+      expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([])
+
+      emitSpy.mockRestore()
     })
 
     it('404s an unknown media id', async () => {
