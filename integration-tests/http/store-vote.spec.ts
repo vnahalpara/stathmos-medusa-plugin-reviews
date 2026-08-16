@@ -27,6 +27,7 @@ medusaIntegrationTestRunner({
           await service.deleteReviewSettings(rows.map((r) => r.id))
         }
         await updateReviewSettingsWorkflow(getContainer()).run({ input: {} })
+        jest.restoreAllMocks()
       })
 
       it('increments helpful_count and creates exactly one vote row, without touching a decoy review voted on first', async () => {
@@ -381,6 +382,47 @@ medusaIntegrationTestRunner({
           .catch((e) => e.response)
         expect(unvoteResponse.status).toEqual(404)
         expect(await service.listReviewVotes({ review_id: review.id })).toHaveLength(1)
+      })
+
+      // M6 (Phase 4 final review): resolveVoterIdentity() used to run
+      // before the settings gate, so a guest voting on a reviews-disabled
+      // store with no vote salt configured hit voterHash()'s deliberate
+      // throw (see src/settings/voter-hash.ts) and got a 500 - the one
+      // disabled-feature path in this plugin that did not 404. The route
+      // now checks settings.enabled first, so identity resolution - and
+      // therefore voterHash() - is never reached at all once the feature
+      // is off.
+      //
+      // integration-tests/setup.js always configures a floor salt so the
+      // rest of this suite can exercise the real guest-vote path, so
+      // getVoteSalt() is stubbed to return undefined here specifically to
+      // reproduce "no salt configured" without disturbing every other
+      // test in this file.
+      it('404s a guest vote on a disabled store even with no vote salt configured, not 500', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        const review = await service.createReviews({
+          product_id: 'prod_vote_disabled_no_salt',
+          display_name: 'No salt test',
+          rating: 5,
+          content: 'x'.repeat(10),
+          status: 'approved',
+        })
+
+        await updateReviewSettingsWorkflow(container).run({ input: { enabled: false } })
+
+        jest.spyOn(service, 'getVoteSalt').mockResolvedValue(undefined)
+
+        const castResponse = await api
+          .post(`/store/reviews/${review.id}/vote`, {}, { headers: storeHeaders })
+          .catch((e) => e.response)
+        expect(castResponse.status).toEqual(404)
+
+        const withdrawResponse = await api
+          .delete(`/store/reviews/${review.id}/vote`, { headers: storeHeaders })
+          .catch((e) => e.response)
+        expect(withdrawResponse.status).toEqual(404)
       })
     })
   },

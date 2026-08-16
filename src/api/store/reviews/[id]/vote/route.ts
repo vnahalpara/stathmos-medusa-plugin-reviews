@@ -1,8 +1,30 @@
 import { AuthenticatedMedusaRequest, MedusaResponse } from '@medusajs/framework/http'
+import { MedusaError } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../../../../modules/review'
 import ReviewModuleService from '../../../../../modules/review/service'
+import { getReviewSettings } from '../../../../../settings/get-review-settings'
 import { voterHash } from '../../../../../settings/voter-hash'
 import { castReviewVoteWorkflow, withdrawReviewVoteWorkflow } from '../../../../../workflows/vote-review'
+
+/**
+ * Refuses before `resolveVoterIdentity()` ever runs, not after: that
+ * function calls `voterHash()` for a guest, which throws (surfacing as a
+ * 500) the moment no salt is configured - see its own docstring. Both
+ * castReviewVoteStep and withdrawReviewVoteStep already re-check
+ * `settings.enabled` themselves (defense in depth against a workflow ever
+ * being invoked some other way), but by the time this ran only after the
+ * workflow, a guest voting on a reviews-disabled store with no salt
+ * configured got a 500 instead of the 404 every other disabled-feature
+ * path returns. Checking here first means the gate always wins the race
+ * against a guest identity computation that can fail on its own.
+ */
+async function assertReviewsEnabled(req: AuthenticatedMedusaRequest): Promise<void> {
+  const settings = await getReviewSettings(req.scope)
+
+  if (!settings.enabled) {
+    throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Reviews are disabled')
+  }
+}
 
 /**
  * Resolves who is voting into exactly the shape Task 1's two partial
@@ -44,6 +66,8 @@ async function resolveVoterIdentity(
 }
 
 export async function POST(req: AuthenticatedMedusaRequest, res: MedusaResponse) {
+  await assertReviewsEnabled(req)
+
   const service = req.scope.resolve(REVIEW_MODULE)
   const identity = await resolveVoterIdentity(req, service)
 
@@ -58,6 +82,8 @@ export async function POST(req: AuthenticatedMedusaRequest, res: MedusaResponse)
 }
 
 export async function DELETE(req: AuthenticatedMedusaRequest, res: MedusaResponse) {
+  await assertReviewsEnabled(req)
+
   const service = req.scope.resolve(REVIEW_MODULE)
   const identity = await resolveVoterIdentity(req, service)
 
