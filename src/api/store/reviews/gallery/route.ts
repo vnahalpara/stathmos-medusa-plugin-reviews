@@ -12,17 +12,18 @@ import { GalleryQuerySchema } from '../middlewares'
  * does not cache (that response can start including a caller's own
  * pending review in a future phase). `max-age=0` keeps a shopper's own
  * browser revalidating on every visit rather than pinning a stale copy
- * locally for minutes; `s-maxage=60` is what actually absorbs load, on a
- * shared cache/CDN in front of this - the highest-volume public read in
- * the plugin (task brief) - for up to a minute, which is short enough
- * that an admin hiding a reported photo (Task 5) or a newly approved
- * review's media both surface within that same minute, and long enough to
- * take real read pressure off the database. `stale-while-revalidate=300`
- * lets a shared cache keep serving its last copy instantly for another 5
- * minutes while it revalidates in the background, so a slow origin
- * request never becomes a slow gallery load - worst-case staleness after
- * that window is still bounded by the next request re-triggering
- * revalidation, not unbounded.
+ * locally for minutes; `s-maxage=60` bounds freshness at a shared
+ * cache/CDN in front of this - the highest-volume public read in the
+ * plugin (task brief) - to 60 seconds, which is what actually takes real
+ * read pressure off the database. `stale-while-revalidate=300` then
+ * authorizes that same shared cache to keep serving its last copy for up
+ * to a further 300 seconds while it revalidates in the background, so a
+ * slow origin request never becomes a slow gallery load. The real worst
+ * case for an admin hiding a reported photo (Task 5) or a newly approved
+ * review's media to actually change at a shared cache is therefore ~360
+ * seconds (about 6 minutes), not the 60-second `s-maxage` window alone -
+ * worst-case staleness beyond that is still bounded by the next request
+ * re-triggering revalidation, not unbounded.
  */
 const GALLERY_CACHE_CONTROL = 'public, max-age=0, s-maxage=60, stale-while-revalidate=300'
 

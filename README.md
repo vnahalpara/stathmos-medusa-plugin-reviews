@@ -356,14 +356,18 @@ so building that remains store-operator responsibility.
   `Cache-Control: public, max-age=0, s-maxage=60,
   stale-while-revalidate=300`. `max-age=0` keeps a shopper's own browser
   revalidating on every visit rather than pinning a stale copy locally;
-  `s-maxage=60` lets a shared cache/CDN in front of this — the
-  highest-volume public read in the plugin — absorb load for up to a
-  minute, short enough that a newly approved review's media or a
-  moderator hiding a reported photo both surface within that same minute;
-  `stale-while-revalidate=300` lets a shared cache keep serving its last
-  copy instantly for another 5 minutes while it revalidates in the
-  background. The response has no per-shopper component, so it is safe to
-  share across every caller of the same product_id/type/limit/offset.
+  `s-maxage=60` bounds freshness at a shared cache/CDN in front of this —
+  the highest-volume public read in the plugin — to 60 seconds, which is
+  what takes real read pressure off the database. `stale-while-revalidate=300`
+  then authorizes that same shared cache to keep serving its last copy for
+  up to a further 300 seconds while it revalidates in the background, so a
+  slow origin request never becomes a slow gallery load. **The real worst
+  case is therefore ~360 seconds (about 6 minutes), not 60** — that is how
+  long a newly approved review's media, or a photo a moderator just hid,
+  can take to actually change at a shared cache, even though the shopper's
+  own browser (`max-age=0`) always revalidates. The response has no
+  per-shopper component, so it is safe to share across every caller of the
+  same product_id/type/limit/offset.
 - Each item in the `media` array is allow-listed, not the raw row: `id`,
   `review_id`, `type`, `url`, `thumbnail_url`, `pinned_at`, `created_at`,
   `rating`, `display_name`, `product_id` — never `email`, `customer_id` or
