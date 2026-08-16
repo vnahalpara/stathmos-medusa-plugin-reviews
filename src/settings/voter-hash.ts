@@ -1,0 +1,44 @@
+import { createHash } from 'node:crypto'
+import { MedusaError } from '@medusajs/framework/utils'
+
+/**
+ * A delimiter that cannot appear inside an IP address or an HTTP header
+ * value, chosen specifically so joining `ip + userAgent + salt` can never
+ * let one field bleed into the next.
+ *
+ * A printable joiner like '.' or ':' is unsafe: both characters are legal
+ * inside an IP address, so `('1.2', '3.4')` and `('1.2.3', '4')` would
+ * concatenate to the identical string "1.2.3.4" and hash the same. NUL
+ * (U+0000) has neither problem - it cannot occur in IPv4 dotted-decimal or
+ * IPv6 colon-hex notation, and RFC 7230's `field-content` grammar for HTTP
+ * header values excludes all control characters, NUL included, so no
+ * conforming user agent string can carry one either. Using it for every
+ * join (including before the salt) keeps the scheme uniform rather than
+ * special-casing one field.
+ */
+const FIELD_DELIMITER = '\x00'
+
+/**
+ * `sha256(ip + userAgent + salt)`, hex-encoded - see spec §9. The result
+ * is pseudonymous personal data under GDPR, and the salt is what keeps it
+ * pseudonymous *per store* rather than a stable fingerprint comparable
+ * across every installation of this plugin. `salt` therefore takes no
+ * default value and is checked at runtime (not just typed as required):
+ * a caller that forwards an unset config value - `undefined` coerces to
+ * '' via Array.join, which would otherwise hash IP+UA alone and silently
+ * degrade every store's votes to the same globally-comparable identifier.
+ * Wiring the actual salt from plugin options is left to the caller
+ * (Task 2); this helper only refuses to run without one.
+ */
+export function voterHash(ip: string, userAgent: string, salt: string): string {
+  if (!salt) {
+    throw new MedusaError(
+      MedusaError.Types.UNEXPECTED_STATE,
+      'voterHash requires a non-empty salt - refusing to hash without one rather than silently degrading to a cross-store identifier.'
+    )
+  }
+
+  return createHash('sha256')
+    .update([ip, userAgent, salt].join(FIELD_DELIMITER))
+    .digest('hex')
+}

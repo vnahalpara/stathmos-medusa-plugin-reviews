@@ -2,12 +2,40 @@ import { createStep, StepResponse } from '@medusajs/framework/workflows-sdk'
 import { MedusaError } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../modules/review'
 import { getReviewSettings } from '../../settings/get-review-settings'
+import { ReviewSettingsValues } from '../../modules/review/settings-defaults'
 
 type Input = {
   product_id: string
   content: string
   customer_id?: string | null
   is_verified_purchase: boolean
+}
+
+/**
+ * The one place review content is measured against `min_content_length` /
+ * `max_content_length`. Exported so applyReviewEditStep (update-review.ts)
+ * can enforce the exact same bounds a new submission does, rather than a
+ * second, independently-maintained pair of `if`s that could quietly drift
+ * from these - the two call sites must always agree on what "too short" and
+ * "too long" mean for the same settings row.
+ */
+export function assertContentLengthWithinBounds(
+  content: string,
+  settings: Pick<ReviewSettingsValues, 'min_content_length' | 'max_content_length'>
+): void {
+  if (content.length < settings.min_content_length) {
+    throw new MedusaError(
+      MedusaError.Types.INVALID_DATA,
+      `Review must be at least ${settings.min_content_length} characters`
+    )
+  }
+
+  if (content.length > settings.max_content_length) {
+    throw new MedusaError(
+      MedusaError.Types.INVALID_DATA,
+      `Review must be at most ${settings.max_content_length} characters`
+    )
+  }
 }
 
 export const validateReviewSubmissionStep = createStep(
@@ -34,19 +62,7 @@ export const validateReviewSubmissionStep = createStep(
       )
     }
 
-    if (input.content.length < settings.min_content_length) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        `Review must be at least ${settings.min_content_length} characters`
-      )
-    }
-
-    if (input.content.length > settings.max_content_length) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        `Review must be at most ${settings.max_content_length} characters`
-      )
-    }
+    assertContentLengthWithinBounds(input.content, settings)
 
     if (settings.one_review_per_customer && input.customer_id) {
       const service = container.resolve(REVIEW_MODULE)

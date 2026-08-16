@@ -1,7 +1,16 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowLeftMini, ArrowRightMini, EyeSlashMini, Trash, XMark } from '@medusajs/icons'
-import { Badge, IconButton, Text } from '@medusajs/ui'
+import {
+  ArrowLeftMini,
+  ArrowRightMini,
+  EyeMini,
+  EyeSlashMini,
+  PinTack,
+  PinTackSolid,
+  Trash,
+  XMark,
+} from '@medusajs/icons'
+import { Badge, Button, IconButton, Text } from '@medusajs/ui'
 
 export type ReviewMediaItem = {
   id: string
@@ -12,6 +21,12 @@ export type ReviewMediaItem = {
   // so a future caller cannot "helpfully" start rendering it without first
   // reading why every value here is null. See ReviewMedia's model comment.
   thumbnail_url: string | null
+  // Set when a moderator has pinned this item to lead the public gallery
+  // (Task 4's `pinned_at DESC NULLS LAST` ordering). Non-null means
+  // pinned; badged here for the same reason hidden_at is - a moderator
+  // opening the lightbox has no other way to tell curation state apart
+  // from a plain, unpinned photo.
+  pinned_at: string | null
   // Set when a moderator has hidden this item from shoppers (it still
   // exists and is still returned here - GET /admin/reviews/:id/media
   // deliberately includes hidden media, see that route's own comment).
@@ -29,15 +44,31 @@ type MediaLightboxProps = {
   onOpenChange: (index: number | null) => void
   onDeleteRequest: (item: ReviewMediaItem) => void
   isDeleting: boolean
+  // Pin/hide are immediate toggles (unlike delete, they are reversible and
+  // need no confirmation prompt) - both handed the full item, same as
+  // onDeleteRequest, so the caller (review-drawer.tsx) can read the
+  // CURRENT pinned_at/hidden_at off it rather than re-deriving "which way
+  // to toggle" from anything closed over here.
+  onPinToggleRequest: (item: ReviewMediaItem) => void
+  onHideToggleRequest: (item: ReviewMediaItem) => void
+  // Covers both toggles, same simplification isDeleting already makes for
+  // the one delete mutation - this lightbox never has two curation
+  // mutations in flight at once (POST .../curation takes one request per
+  // click), so one shared pending flag is enough to disable every
+  // curation control while any of them is in flight.
+  isCurating: boolean
 }
 
 /**
  * A larger view of one item from a review's media strip, with prev/next
- * navigation and a delete affordance. This component never deletes
- * anything itself - `onDeleteRequest` hands the item back to the caller,
- * which is expected to confirm first (review-drawer.tsx does this with a
- * Medusa UI `Prompt`, never `window.confirm`) before calling
- * DELETE /admin/reviews/media/:id.
+ * navigation, a delete affordance, and Pin/Unpin + Hide/Unhide curation
+ * toggles (Task 5's `POST /admin/reviews/media/:id/curation`). This
+ * component never calls the API itself - `onDeleteRequest`/
+ * `onPinToggleRequest`/`onHideToggleRequest` all hand the current item back
+ * to the caller (review-drawer.tsx), which owns every mutation. Delete
+ * additionally requires confirmation there (a Medusa UI `Prompt`, never
+ * `window.confirm`) before it calls DELETE /admin/reviews/media/:id; pin
+ * and hide are immediate, reversible toggles and need none.
  *
  * `thumbnail_url` is always null (see the type above) - images render
  * straight from `url` (the original file already IS the thumbnail-sized
@@ -57,7 +88,16 @@ type MediaLightboxProps = {
  * stacking arena so a z-index comparison against them is actually
  * meaningful.
  */
-const MediaLightbox = ({ media, index, onOpenChange, onDeleteRequest, isDeleting }: MediaLightboxProps) => {
+const MediaLightbox = ({
+  media,
+  index,
+  onOpenChange,
+  onDeleteRequest,
+  isDeleting,
+  onPinToggleRequest,
+  onHideToggleRequest,
+  isCurating,
+}: MediaLightboxProps) => {
   const open = index !== null
   const current = index !== null ? media[index] : null
 
@@ -112,6 +152,11 @@ const MediaLightbox = ({ media, index, onOpenChange, onDeleteRequest, isDeleting
             <Text size="small" leading="compact" className="text-ui-fg-subtle">
               {index + 1} / {media.length}
             </Text>
+            {current.pinned_at && (
+              <Badge color="purple" size="2xsmall" className="flex items-center gap-x-1">
+                <PinTackSolid /> Pinned to gallery
+              </Badge>
+            )}
             {current.hidden_at && (
               <Badge color="grey" size="2xsmall" className="flex items-center gap-x-1">
                 <EyeSlashMini /> Hidden from shoppers
@@ -119,6 +164,26 @@ const MediaLightbox = ({ media, index, onOpenChange, onDeleteRequest, isDeleting
             )}
           </div>
           <div className="flex items-center gap-x-1">
+            <Button
+              size="small"
+              variant="secondary"
+              disabled={isCurating}
+              onClick={() => onPinToggleRequest(current)}
+              aria-label={current.pinned_at ? 'Unpin from gallery' : 'Pin to gallery'}
+            >
+              {current.pinned_at ? <PinTackSolid /> : <PinTack />}
+              {current.pinned_at ? 'Unpin' : 'Pin'}
+            </Button>
+            <Button
+              size="small"
+              variant="secondary"
+              disabled={isCurating}
+              onClick={() => onHideToggleRequest(current)}
+              aria-label={current.hidden_at ? 'Unhide from shoppers' : 'Hide from shoppers'}
+            >
+              {current.hidden_at ? <EyeMini /> : <EyeSlashMini />}
+              {current.hidden_at ? 'Unhide' : 'Hide'}
+            </Button>
             <IconButton
               size="small"
               variant="transparent"

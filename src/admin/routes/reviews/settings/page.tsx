@@ -451,7 +451,7 @@ const ReviewSettingsPage = () => {
             />
             <ToggleRow
               label="Enable product photo gallery"
-              help="Reserved for a store-wide customer photo gallery that has not shipped yet, so this setting has no visible effect on the storefront today - including the photos already shown on individual reviews, which are controlled by the photo and video settings above, not this one."
+              help="Serves the customer photo and video gallery at GET /store/reviews/gallery, either for one product or across the whole store. Only media on approved reviews appears, pinned items first; hidden items never appear. Switching this off makes that endpoint return 404 - it does NOT affect the photos shown on individual reviews, which the photo and video settings above control."
               checked={draft.booleans.gallery_enabled}
               onCheckedChange={(value) => setBoolean('gallery_enabled', value)}
               disabled={controlsDisabled}
@@ -462,10 +462,10 @@ const ReviewSettingsPage = () => {
             <SectionHeader title="Editing" />
             <ToggleRow
               label="Allow customers to edit reviews"
-              help="Not yet available - review editing has not shipped. This control is disabled so it can't be switched on and mistaken for a working feature; a customer cannot edit a submitted review regardless of this setting."
+              help="Lets a signed-in customer edit their own review's rating, title and content after submitting it. Guests can never edit, since a guest submission has no account to prove ownership. If approval is required (above), an edited review is sent back to Pending and disappears from the storefront until it is re-approved; its photos and videos are unaffected."
               checked={draft.booleans.allow_edit}
               onCheckedChange={(value) => setBoolean('allow_edit', value)}
-              disabled
+              disabled={controlsDisabled}
             />
           </div>
         </>

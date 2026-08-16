@@ -15,6 +15,7 @@ import {
   MAX_UPLOAD_REQUEST_SIZE_BYTES,
   reviewMediaUploadLimits,
 } from '../../../media/upload-limits'
+import { GALLERY_MAX_LIMIT } from '../../../modules/review/service'
 
 // Files are held in memory only long enough to sniff and re-encode them;
 // the File Module owns persistence. Every ceiling, and the reasoning for
@@ -144,6 +145,30 @@ export const CreateReviewSchema = z
 
 export type CreateReviewSchema = z.infer<typeof CreateReviewSchema>
 
+export const UpdateReviewSchema = z
+  .object({
+    rating: z.number().int().min(1).max(5).optional(),
+    // `.nullable()` (not just `.optional()`) so `{ title: null }` clears a
+    // previously-set title - applyReviewEditStep's Input type and its
+    // `input.title !== undefined ? input.title : review.title` branch were
+    // already written to handle exactly this; the schema was the gap. This
+    // is the only way a customer can remove a title once they've added
+    // one, so keep the capability even though most edits never use it.
+    title: z.string().max(200).nullable().optional(),
+    content: z.string().min(1).max(20000).optional(),
+  })
+  .strict()
+  // Same reasoning as CurateMediaSchema (admin/reviews/middlewares.ts): an
+  // empty `{}` is a 400, not a silent no-op that still flips an approved
+  // review back to `pending` for no actual content change.
+  .refine(
+    (data) =>
+      data.rating !== undefined || data.title !== undefined || data.content !== undefined,
+    { message: 'At least one of `rating`, `title` or `content` is required' }
+  )
+
+export type UpdateReviewSchema = z.infer<typeof UpdateReviewSchema>
+
 const toInt = (val: unknown) =>
   typeof val === 'string' ? parseInt(val, 10) : val
 
@@ -159,6 +184,23 @@ export const ListProductReviewsSchema = z
   .strict()
 
 export type ListProductReviewsSchema = z.infer<typeof ListProductReviewsSchema>
+
+export const GalleryQuerySchema = z
+  .object({
+    product_id: z.string().min(1).optional(),
+    type: z.enum(['image', 'video', 'all']).optional(),
+    // Same "an uncapped limit is a free denial of service" reasoning as
+    // ListProductReviewsSchema above, but higher stakes here: this is the
+    // one store route with no product/review scope required at all, so a
+    // caller can already ask for the whole store's gallery in one request
+    // - GALLERY_MAX_LIMIT (service.ts) is the single number both this
+    // schema and listGalleryMedia()'s own defensive clamp are pinned to.
+    limit: z.preprocess(toInt, z.number().int().min(1).max(GALLERY_MAX_LIMIT).optional()),
+    offset: z.preprocess(toInt, z.number().int().min(0).optional()),
+  })
+  .strict()
+
+export type GalleryQuerySchema = z.infer<typeof GalleryQuerySchema>
 
 export const storeReviewMiddlewares: MiddlewareRoute[] = [
   {
@@ -185,5 +227,41 @@ export const storeReviewMiddlewares: MiddlewareRoute[] = [
     matcher: '/store/reviews/uploads',
     method: 'POST',
     middlewares: [uploadReviewMediaFiles],
+  },
+  {
+    matcher: '/store/reviews/gallery',
+    method: 'GET',
+    middlewares: [validateAndTransformQuery(GalleryQuerySchema, {})],
+  },
+  {
+    matcher: '/store/reviews/:id',
+    method: 'POST',
+    middlewares: [
+      // allowUnauthenticated so a guest still reaches the route/workflow -
+      // same reasoning as POST /store/reviews above - which then refuses
+      // with a specific, explanatory ownership error rather than the
+      // framework's own bare 401 for a missing session/bearer token. A
+      // customer session/bearer token IS attributed via req.auth_context
+      // when present, which is what applyReviewEditStep compares against
+      // the review's own customer_id.
+      authenticate('customer', ['session', 'bearer'], { allowUnauthenticated: true }),
+      validateAndTransformBody(UpdateReviewSchema),
+    ],
+  },
+  {
+    matcher: '/store/reviews/:id/vote',
+    method: 'POST',
+    // Same allowUnauthenticated reasoning as POST /store/reviews above: a
+    // guest must reach the route handler too (voting is not
+    // customer-only), but a customer session/bearer token IS present when
+    // sent, which is what lets the route dedup by customer_id instead of
+    // computing a voter_hash for someone Task 1's review proved must never
+    // get one. No body, so no Zod schema/validateAndTransformBody.
+    middlewares: [authenticate('customer', ['session', 'bearer'], { allowUnauthenticated: true })],
+  },
+  {
+    matcher: '/store/reviews/:id/vote',
+    method: 'DELETE',
+    middlewares: [authenticate('customer', ['session', 'bearer'], { allowUnauthenticated: true })],
   },
 ]

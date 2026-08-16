@@ -37,6 +37,10 @@ export async function GET(req: AuthenticatedMedusaRequest, res: MedusaResponse) 
   // convention for every response that touches review_media (see the
   // store route's own comment) so a column added later can't leak here by
   // accident.
+  //
+  // `pinned_at` (Task 6) alongside `hidden_at` - the admin lightbox needs
+  // both to render curation state correctly on load, not only right after
+  // a curation mutation's own response.
   res.json({
     media: media.map((item) => ({
       id: item.id,
@@ -45,6 +49,7 @@ export async function GET(req: AuthenticatedMedusaRequest, res: MedusaResponse) 
       thumbnail_url: item.thumbnail_url,
       mime_type: item.mime_type,
       sort_order: item.sort_order,
+      pinned_at: item.pinned_at,
       hidden_at: item.hidden_at,
     })),
   })

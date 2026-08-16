@@ -2,7 +2,8 @@ import { medusaIntegrationTestRunner } from '@medusajs/test-utils'
 import { REVIEW_MODULE } from '../../src/modules/review'
 import { recomputeReviewStats } from '../../src/workflows/steps/recompute-review-stats'
 import { updateReviewSettingsWorkflow } from '../../src/workflows/update-review-settings'
-import { getPublishableKeyHeaders } from '../helpers/store'
+import { castReviewVoteWorkflow } from '../../src/workflows/vote-review'
+import { createCustomerAuthHeaders, getPublishableKeyHeaders } from '../helpers/store'
 
 medusaIntegrationTestRunner({
   inApp: true,
@@ -77,6 +78,7 @@ medusaIntegrationTestRunner({
             'content',
             'created_at',
             'display_name',
+            'edited_at',
             'helpful_count',
             'id',
             'is_verified_purchase',
@@ -88,6 +90,51 @@ medusaIntegrationTestRunner({
             'title',
           ].sort()
         )
+      })
+
+      // I3 (Phase 4 final review): applyReviewEditStep sets edited_at on
+      // every edit, and the edit route itself already returned it - this
+      // route's own allow-list was the only place it was missing, so a
+      // shopper had no public signal that a review with N helpful votes
+      // and a verified badge had since been rewritten.
+      it('exposes edited_at as null before an edit and non-null after one', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { allow_edit: true, require_approval: false },
+        })
+
+        const { customer, headers: customerHeaders } = await createCustomerAuthHeaders(
+          container,
+          'edited-at-visible@example.com'
+        )
+
+        const review = await service.createReviews({
+          product_id: 'prod_edited_at_visible',
+          customer_id: customer.id,
+          display_name: 'Ada',
+          rating: 3,
+          content: 'Content that will later be edited to check edited_at visibility.',
+          status: 'approved',
+        })
+
+        const before = await api.get('/store/products/prod_edited_at_visible/reviews', {
+          headers: storeHeaders,
+        })
+        expect(before.data.reviews[0].edited_at).toBeNull()
+
+        const editResponse = await api.post(
+          `/store/reviews/${review.id}`,
+          { content: 'Edited content that must now surface a non-null edited_at.' },
+          { headers: { ...storeHeaders, ...customerHeaders } }
+        )
+        expect(editResponse.status).toEqual(200)
+
+        const after = await api.get('/store/products/prod_edited_at_visible/reviews', {
+          headers: storeHeaders,
+        })
+        expect(after.data.reviews[0].edited_at).not.toBeNull()
       })
 
       it('caps limit at 100', async () => {
@@ -104,6 +151,65 @@ medusaIntegrationTestRunner({
         })
 
         expect(response.data.reviews[0].rating).toEqual(5)
+      })
+
+      // most_helpful has existed since Phase 1, but every review's
+      // helpful_count sat at its default 0 until Task 2 shipped a real way
+      // to move it - so this sort was never actually testable against a
+      // counter with distinct values before now. Votes are cast through
+      // castReviewVoteWorkflow (the same production code path the store
+      // vote route runs), not a hand-set helpful_count column, so this
+      // proves the sort against the real counter, not a fake one.
+      //
+      // The decoy is seeded SECOND, so it is the newer row and sorts
+      // FIRST under the route's `created_at DESC` fallback (ORDER_BY.newest)
+      // - the standing rule that a decoy must be the row an unfiltered
+      // query would return first. If most_helpful ever silently degraded
+      // to that fallback, the response would come back [decoy, underVoted]
+      // and the assertion below would fail, instead of passing by luck of
+      // insertion order.
+      it('sorts by helpful_count when sort=most_helpful, exercised via real votes', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        const underVoted = await service.createReviews({
+          product_id: 'prod_most_helpful',
+          display_name: 'Under-voted',
+          rating: 4,
+          content: 'x'.repeat(10),
+          status: 'approved',
+        })
+
+        // Created AFTER underVoted, so it is strictly newer and would
+        // sort FIRST under `created_at DESC` alone - proving the
+        // assertion below actually exercises the most_helpful comparator,
+        // not insertion order.
+        const decoy = await service.createReviews({
+          product_id: 'prod_most_helpful',
+          display_name: 'Decoy',
+          rating: 5,
+          content: 'x'.repeat(10),
+          status: 'approved',
+        })
+
+        await castReviewVoteWorkflow(container).run({
+          input: { review_id: underVoted.id, customer_id: 'cus_most_helpful_a', voter_hash: null },
+        })
+        await castReviewVoteWorkflow(container).run({
+          input: { review_id: underVoted.id, customer_id: 'cus_most_helpful_b', voter_hash: null },
+        })
+
+        const response = await api.get(
+          '/store/products/prod_most_helpful/reviews?sort=most_helpful',
+          { headers: storeHeaders }
+        )
+
+        expect(response.data.reviews.map((r: { id: string }) => r.id)).toEqual([
+          underVoted.id,
+          decoy.id,
+        ])
+        expect(response.data.reviews[0].helpful_count).toEqual(2)
+        expect(response.data.reviews[1].helpful_count).toEqual(0)
       })
 
       it('404s when reviews are disabled', async () => {
