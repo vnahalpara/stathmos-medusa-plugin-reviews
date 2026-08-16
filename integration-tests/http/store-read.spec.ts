@@ -3,7 +3,7 @@ import { REVIEW_MODULE } from '../../src/modules/review'
 import { recomputeReviewStats } from '../../src/workflows/steps/recompute-review-stats'
 import { updateReviewSettingsWorkflow } from '../../src/workflows/update-review-settings'
 import { castReviewVoteWorkflow } from '../../src/workflows/vote-review'
-import { getPublishableKeyHeaders } from '../helpers/store'
+import { createCustomerAuthHeaders, getPublishableKeyHeaders } from '../helpers/store'
 
 medusaIntegrationTestRunner({
   inApp: true,
@@ -78,6 +78,7 @@ medusaIntegrationTestRunner({
             'content',
             'created_at',
             'display_name',
+            'edited_at',
             'helpful_count',
             'id',
             'is_verified_purchase',
@@ -89,6 +90,51 @@ medusaIntegrationTestRunner({
             'title',
           ].sort()
         )
+      })
+
+      // I3 (Phase 4 final review): applyReviewEditStep sets edited_at on
+      // every edit, and the edit route itself already returned it - this
+      // route's own allow-list was the only place it was missing, so a
+      // shopper had no public signal that a review with N helpful votes
+      // and a verified badge had since been rewritten.
+      it('exposes edited_at as null before an edit and non-null after one', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { allow_edit: true, require_approval: false },
+        })
+
+        const { customer, headers: customerHeaders } = await createCustomerAuthHeaders(
+          container,
+          'edited-at-visible@example.com'
+        )
+
+        const review = await service.createReviews({
+          product_id: 'prod_edited_at_visible',
+          customer_id: customer.id,
+          display_name: 'Ada',
+          rating: 3,
+          content: 'Content that will later be edited to check edited_at visibility.',
+          status: 'approved',
+        })
+
+        const before = await api.get('/store/products/prod_edited_at_visible/reviews', {
+          headers: storeHeaders,
+        })
+        expect(before.data.reviews[0].edited_at).toBeNull()
+
+        const editResponse = await api.post(
+          `/store/reviews/${review.id}`,
+          { content: 'Edited content that must now surface a non-null edited_at.' },
+          { headers: { ...storeHeaders, ...customerHeaders } }
+        )
+        expect(editResponse.status).toEqual(200)
+
+        const after = await api.get('/store/products/prod_edited_at_visible/reviews', {
+          headers: storeHeaders,
+        })
+        expect(after.data.reviews[0].edited_at).not.toBeNull()
       })
 
       it('caps limit at 100', async () => {

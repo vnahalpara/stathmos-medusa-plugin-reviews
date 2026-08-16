@@ -102,6 +102,12 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       is_verified_purchase: review.is_verified_purchase,
       helpful_count: review.helpful_count,
       created_at: review.created_at,
+      // Store-safe already: POST /store/reviews/:id (the edit route)
+      // already returns this field. Without it here, a review can be
+      // rewritten after accumulating helpful votes and a verified badge
+      // with no public signal that it changed - null until the first
+      // edit, non-null afterwards.
+      edited_at: review.edited_at,
       media: (mediaByReview.get(review.id) ?? [])
         .sort((a, b) => a.sort_order - b.sort_order)
         .map((m) => ({
