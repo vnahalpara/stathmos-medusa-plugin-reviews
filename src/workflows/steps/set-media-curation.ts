@@ -43,6 +43,19 @@ type Compensation = {
  * was, not also wipe the pin nothing here ever asked to change). See
  * update-review-settings.ts's `previous` snapshot for the same shape of
  * guarantee applied to a different table.
+ *
+ * Returns `{ media, review_id, product_id }` rather than the bare row -
+ * the same shape applyReviewEditStep already uses for the same reason.
+ * curateReviewMediaWorkflow needs a PRODUCT id to put on its
+ * `review.media.curated` event, because a subscriber's whole reason to
+ * listen is invalidating the cache of the page this media is shown on, and
+ * neither the media row nor the curation request carries one - only the
+ * parent review does. Resolving it here, in the step that has already
+ * loaded the media, costs one extra read on a path a moderator triggers by
+ * hand; making every host's subscriber resolve it instead would push a
+ * plugin-internal join into the revalidation recipe. `product_id` is null
+ * exactly when `review_id` is - an uploaded-but-never-attached row, which
+ * the orphan sweep deletes and which no storefront page has ever shown.
  */
 export const setMediaCurationStep = createStep(
   'set-media-curation',
@@ -69,7 +82,18 @@ export const setMediaCurationStep = createStep(
 
     const updated = await service.updateReviewMedias({ id: input.id, ...changes })
 
-    return new StepResponse(updated, compensation)
+    const [review] = media.review_id
+      ? await service.listReviews({ id: media.review_id }, { take: 1 })
+      : []
+
+    return new StepResponse(
+      {
+        media: updated,
+        review_id: media.review_id,
+        product_id: review?.product_id ?? null,
+      },
+      compensation
+    )
   },
   async (compensation, { container }) => {
     if (!compensation) {

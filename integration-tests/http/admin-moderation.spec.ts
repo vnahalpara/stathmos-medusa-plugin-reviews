@@ -1,7 +1,9 @@
 import { medusaIntegrationTestRunner } from '@medusajs/test-utils'
+import { Modules } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../src/modules/review'
 import { createAdminUser, adminHeaders } from '../helpers/admin'
 import { getPublishableKeyHeaders } from '../helpers/store'
+import { emittedEvents, REVIEW_WORKFLOW_EVENTS } from '../helpers/events'
 
 medusaIntegrationTestRunner({
   inApp: true,
@@ -84,6 +86,59 @@ medusaIntegrationTestRunner({
         headers: storeHeaders,
       })
       expect(stats.data.count).toEqual(2)
+    })
+
+    /**
+     * `review.approved`/`review.rejected` predate Phase 5; `product_ids` on
+     * their payload does not. It is what makes them usable for cache
+     * invalidation at all - a subscriber handed only review ids has to read
+     * the reviews back just to learn which product pages went stale.
+     *
+     * The batch case is the interesting one, and it is asserted here rather
+     * than the single-review one because it is the only place the plural is
+     * load-bearing: two reviews on two DIFFERENT products must both appear,
+     * deduped, or a bulk approval silently leaves one product's cache
+     * stale. `expect.arrayContaining` is not enough for that - an
+     * implementation returning only the first product would pass it - so
+     * this sorts and compares exactly.
+     */
+    it('puts every affected product_id on review.approved, deduped, across a multi-product batch', async () => {
+      const container = getContainer()
+      const service = container.resolve(REVIEW_MODULE)
+
+      // Same product as `reviewId`, so the dedup below is exercised by real
+      // data rather than assumed.
+      const sameProduct = await service.createReviews({
+        product_id: 'prod_mod',
+        display_name: 'B',
+        rating: 4,
+        content: 'x'.repeat(10),
+      })
+      const otherProduct = await service.createReviews({
+        product_id: 'prod_mod_other',
+        display_name: 'C',
+        rating: 3,
+        content: 'x'.repeat(10),
+      })
+
+      const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+      const response = await api.post(
+        '/admin/reviews/batch/status',
+        { ids: [reviewId, sameProduct.id, otherProduct.id], status: 'approved' },
+        adminHeaders
+      )
+      expect(response.status).toEqual(200)
+
+      const [event, ...rest] = emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)
+      expect(rest).toEqual([])
+      expect(event.name).toEqual('review.approved')
+
+      const data = event.data as { ids: string[]; product_ids: string[] }
+      expect(data.ids).toEqual([reviewId, sameProduct.id, otherProduct.id])
+      expect([...data.product_ids].sort()).toEqual(['prod_mod', 'prod_mod_other'])
+
+      emitSpy.mockRestore()
     })
 
     it('lists pending reviews for the queue', async () => {

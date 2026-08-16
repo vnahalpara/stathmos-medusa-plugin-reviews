@@ -34,10 +34,18 @@ export const moderateReviewsWorkflow = createWorkflow(
       transform({ result }, (data) => ({ product_id: data.result.product_ids[0] }))
     )
 
+    // `product_ids` is additive: `ids` is unchanged, so anything already
+    // subscribed keeps working. It exists for the same reason the newer
+    // events carry `product_id` - a subscriber invalidating a cache needs
+    // to know WHICH product page changed, and a batch moderation is the
+    // one place in this plugin where that is legitimately a set rather
+    // than a single value (deduped by moderateReviewsStep). Without it,
+    // every host following the revalidation recipe would have to re-read
+    // the reviews it was just told about purely to learn their products.
     emitEventStep(
-      transform({ input }, (data) => ({
+      transform({ input, result }, (data) => ({
         eventName: data.input.status === 'approved' ? 'review.approved' : 'review.rejected',
-        data: { ids: data.input.ids },
+        data: { ids: data.input.ids, product_ids: data.result.product_ids },
       }))
     )
 

@@ -1,10 +1,12 @@
 import { medusaIntegrationTestRunner } from '@medusajs/test-utils'
 import { createStep, createWorkflow, StepResponse, WorkflowResponse } from '@medusajs/framework/workflows-sdk'
+import { Modules } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../src/modules/review'
 import { setMediaCurationStep } from '../../src/workflows/steps/set-media-curation'
 import { CurateReviewMediaInput } from '../../src/workflows/curate-review-media'
 import { createAdminUser, adminHeaders } from '../helpers/admin'
 import { getPublishableKeyHeaders } from '../helpers/store'
+import { emittedEvents, REVIEW_WORKFLOW_EVENTS } from '../helpers/events'
 
 type MediaInput = {
   review_id: string
@@ -53,6 +55,10 @@ medusaIntegrationTestRunner({
   testSuite: ({ api, getContainer }) => {
     beforeEach(async () => {
       await createAdminUser(getContainer())
+    })
+
+    afterEach(() => {
+      jest.restoreAllMocks()
     })
 
     describe('POST /admin/reviews/media/:id/curation', () => {
@@ -169,6 +175,138 @@ medusaIntegrationTestRunner({
 
         expect(response.data.media.pinned_at).not.toBeNull()
         expect(response.data.media.hidden_at).not.toBeNull()
+      })
+
+      /**
+       * The most time-critical event this plugin emits. Hiding is what a
+       * moderator reaches for when a photo must come down NOW, and the
+       * gallery route serves `s-maxage=60, stale-while-revalidate=300` -
+       * so with nothing emitted, a CDN can keep serving a hidden photo for
+       * roughly six more minutes after it was hidden. `product_id` is the
+       * part that makes the event actionable, and it is not on the media
+       * row: only the parent review has it.
+       *
+       * The decoy this project's standing instruction calls for: a SECOND
+       * review, on a DIFFERENT product, seeded FIRST. The step resolves
+       * the product with `listReviews({ id: media.review_id }, { take: 1 })`
+       * - drop that filter and the take-1 read returns the decoy, so the
+       * emitted `product_id` would be the wrong product's and this fails
+       * loudly. With only one review in the database it would pass either
+       * way.
+       */
+      it("emits review.media.curated carrying the parent review's own product_id", async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        const decoyReview = await service.createReviews({
+          product_id: 'prod_curate_event_decoy',
+          display_name: 'Decoy',
+          rating: 1,
+          content: 'x'.repeat(20),
+          status: 'approved',
+        })
+        await service.createReviewMedias([
+          {
+            review_id: decoyReview.id,
+            type: 'image',
+            file_id: 'file_curate_event_decoy',
+            url: 'http://localhost/static/file_curate_event_decoy.png',
+            mime_type: 'image/png',
+            size_bytes: 100,
+          } satisfies MediaInput,
+        ])
+
+        const review = await service.createReviews({
+          product_id: 'prod_curate_event',
+          display_name: 'Guest',
+          rating: 5,
+          content: 'x'.repeat(20),
+          status: 'approved',
+        })
+        const [media] = await service.createReviewMedias([
+          {
+            review_id: review.id,
+            type: 'image',
+            file_id: 'file_curate_event',
+            url: 'http://localhost/static/file_curate_event.png',
+            mime_type: 'image/png',
+            size_bytes: 100,
+          } satisfies MediaInput,
+        ])
+
+        const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+        const hideResponse = await api.post(
+          `/admin/reviews/media/${media.id}/curation`,
+          { hidden: true },
+          adminHeaders
+        )
+        expect(hideResponse.status).toEqual(200)
+
+        expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+          {
+            name: 'review.media.curated',
+            data: {
+              id: media.id,
+              review_id: review.id,
+              product_id: 'prod_curate_event',
+            },
+          },
+        ])
+
+        // Un-hiding is just as cache-relevant as hiding - the photo has to
+        // come BACK - so the event fires on the way out too, not only on
+        // the way in.
+        emitSpy.mockClear()
+        await api.post(
+          `/admin/reviews/media/${media.id}/curation`,
+          { hidden: false },
+          adminHeaders
+        )
+        expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+          {
+            name: 'review.media.curated',
+            data: {
+              id: media.id,
+              review_id: review.id,
+              product_id: 'prod_curate_event',
+            },
+          },
+        ])
+      })
+
+      it('emits nothing when curating media that is not attached to a review', async () => {
+        // An uploaded-but-never-attached row (review_id null) has never
+        // been rendered on any storefront page, so there is no product
+        // whose cache could be stale. Emitting anyway would hand every
+        // subscriber a `product_id: null` to guard against; the workflow's
+        // `when` guard is what this asserts.
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        const [orphan] = await service.createReviewMedias([
+          {
+            type: 'image',
+            file_id: 'file_curate_event_orphan',
+            url: 'http://localhost/static/file_curate_event_orphan.png',
+            mime_type: 'image/png',
+            size_bytes: 100,
+          },
+        ])
+
+        const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+        const response = await api.post(
+          `/admin/reviews/media/${orphan.id}/curation`,
+          { hidden: true },
+          adminHeaders
+        )
+
+        // Still curated - the guard is on the event, not on the write.
+        expect(response.status).toEqual(200)
+        expect(response.data.media.hidden_at).not.toBeNull()
+
+        expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([])
       })
 
       it('404s a non-existent media id', async () => {

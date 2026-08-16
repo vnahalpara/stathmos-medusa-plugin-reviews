@@ -2,20 +2,14 @@ import { medusaIntegrationTestRunner } from '@medusajs/test-utils'
 import { Modules } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../src/modules/review'
 import { createAdminUser, adminHeaders } from '../helpers/admin'
+import { emittedEventNames } from '../helpers/events'
 
-/**
- * emitEventStep calls `eventBus.emit(message)` with `message` always an
- * array of `{ name, data, ... }` objects (see
- * @medusajs/core-flows/common/steps/emit-event.js) - flattened here and
- * filtered to this plugin's reply events, since other workflows invoked by
- * test setup (creating the admin user, creating the review) emit their own
- * unrelated events on the same spied bus.
- */
+// Thin alias over the shared helper (integration-tests/helpers/events.ts),
+// which this file's own local version was generalised into once Phase 5's
+// revalidation events needed the same flatten-and-filter in three more
+// suites. Reply assertions only ever cared about names.
 function replyEventNames(emitSpy: jest.SpyInstance): string[] {
-  return emitSpy.mock.calls
-    .flatMap(([messages]) => (Array.isArray(messages) ? messages : [messages]))
-    .map((message) => (message as { name: string }).name)
-    .filter((name) => name.startsWith('review.reply.'))
+  return emittedEventNames(emitSpy, 'review.reply.')
 }
 
 medusaIntegrationTestRunner({
