@@ -34,9 +34,16 @@ medusaIntegrationTestRunner({
         await updateReviewSettingsWorkflow(getContainer()).run({ input: {} })
       })
 
+      // M7 (Phase 4 final review): the pending review's media is seeded
+      // first only so it exists to be excluded, not because seeding order
+      // matters here - it is chronologically OLDER and so would sort
+      // SECOND, not first, if the approved-only filter were removed. What
+      // actually proves the exclusion is the exact count(1) and the exact
+      // id match below: a leaked decoy would fail both regardless of
+      // where it sorts.
       it(
-        "returns only an approved review's media, with a pending review's " +
-          'media seeded FIRST so an unfiltered query would return it',
+        "returns only an approved review's media, excluding a pending " +
+          "review's media - proven by an exact count and id match, not by seed order",
         async () => {
           const container = getContainer()
           const service = container.resolve(REVIEW_MODULE)
@@ -89,7 +96,14 @@ medusaIntegrationTestRunner({
         }
       )
 
-      it('excludes hidden media, seeded FIRST so an unfiltered query would return it', async () => {
+      // M7 (Phase 4 final review): the hidden item is seeded first only so
+      // it exists to be excluded, not because seeding order matters here -
+      // it is chronologically OLDER and so would sort SECOND, not first,
+      // if the hidden_at filter were removed. What actually proves the
+      // exclusion is the exact array equality below (length 1, exactly
+      // visible.id): a leaked hidden item would fail that regardless of
+      // where it sorts.
+      it('excludes hidden media - proven by an exact array match, not by seed order', async () => {
         const container = getContainer()
         const service = container.resolve(REVIEW_MODULE)
 
