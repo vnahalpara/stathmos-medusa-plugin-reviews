@@ -12,8 +12,8 @@ Phase 5: a Next.js storefront recipe, JSON-LD structured data, a
 cache-revalidation recipe, and the full documentation set
 (`docs/storefront-nextjs.md`, `docs/api-reference.md`, `docs/settings.md`,
 `docs/seo-json-ld.md`, `docs/revalidation.md`). No `src/` changes in this
-release beyond three additive events needed to make the revalidation
-recipe correct — see below.
+release beyond the additive events needed to make the revalidation recipe
+correct — see below.
 
 **The storefront finding of this phase: helpful votes must be cast from
 the shopper's own browser, never routed through a Next.js `"use server"`
@@ -35,7 +35,7 @@ making dedup trivially defeatable and letting an attacker forge a chosen
 victim's hash. See
 [docs/storefront-nextjs.md](docs/storefront-nextjs.md#helpful-votes-must-be-cast-from-the-browser-never-from-a-server-action).
 
-**Three additive events were added to `src/` to make the revalidation
+**Several additive events were added to `src/` to make the revalidation
 recipe correct, closing gaps found while building the storefront that
 consumes them:** `review.updated` now also fires from the edit workflow
 (an edit that returns an approved review to `pending` previously left
@@ -43,19 +43,26 @@ cached storefronts serving it for the full cache window); `review.approved`
 now also fires from `createReviewWorkflow` alongside `review.created` when
 a `require_approval: false` store auto-publishes a submission (previously
 the one event meaning "this became publicly visible" never fired on
-auto-approving stores); and `review.media.curated` /
+auto-approving stores); `review.media.curated` /
 `review.media.deleted` now fire from media curation and deletion (a
 moderator hiding or deleting a photo previously had no way to shrink the
-gallery route's ~6-minute CDN cache window). All three are additive, no
-schema change. A moderator resetting a review to `pending` was also fixed
-to emit `review.updated` rather than a wrongly-fired `review.rejected` —
-these events are what a future notification feature would subscribe to,
-and the old mapping would have emailed a customer "your review was
-rejected" because a moderator merely wanted a second look. See
-[docs/revalidation.md](docs/revalidation.md) for the full recipe, all five
-events, the three cache tags, and why the endpoint fails closed (503) when
-its shared secret is unset rather than falling open into an unauthenticated
-cache-busting endpoint.
+gallery route's ~6-minute CDN cache window); and, closing the last gap,
+`review.reply.created`/`review.reply.updated` now carry `product_id`
+alongside `review_id` (they previously carried only `review_id`, with
+nothing for a subscriber to invalidate against), and a new
+`review.reply.deleted` event covers a merchant deleting a reply outright —
+the same failure `review.media.deleted` had already closed for photos, one
+surface over. All additive, no schema change. A moderator resetting a
+review to `pending` was also fixed to emit `review.updated` rather than a
+wrongly-fired `review.rejected` — these events are what a future
+notification feature would subscribe to, and the old mapping would have
+emailed a customer "your review was rejected" because a moderator merely
+wanted a second look. See [docs/revalidation.md](docs/revalidation.md) for
+the full recipe: an events table with an emitter column (two event names
+are emitted by more than one workflow, with different payload shapes), all
+eight subscribed events, the three cache tags, and why the endpoint fails
+closed (503) when its shared secret is unset rather than falling open into
+an unauthenticated cache-busting endpoint.
 
 **Limitations documented, not fixed, in this phase** — each is a
 deliberate trade-off with its reasoning written down in

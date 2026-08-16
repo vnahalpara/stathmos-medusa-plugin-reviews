@@ -520,16 +520,20 @@ history, no threading). Atomic
 
 **Response `200`:** `{ reply: { id, review_id, content, created_at, updated_at } }`.
 `replied_by` (the admin user's id) is recorded on the row but **never**
-appears in this or any other response.
+appears in this or any other response. Emits `review.reply.created` on a
+first reply, `review.reply.updated` on an edit to an existing one — see
+[revalidation.md](./revalidation.md) for both payloads (`{ review_id, product_id }`).
 
 ### `GET /admin/reviews/:id/reply`
 
 Read the current reply. **`{ reply: null }` with a `200`**, not a 404,
-when nobody has replied — that's a normal state.
+when nobody has replied — that's a normal state. Emits nothing (a read
+has no state to announce).
 
 ### `DELETE /admin/reviews/:id/reply`
 
 Remove the reply. **Response `200`:** `{ id, object: "review_reply", deleted: true }`.
+Emits `review.reply.deleted` (`{ review_id, product_id }`).
 
 ---
 

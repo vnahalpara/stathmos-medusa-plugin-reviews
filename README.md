@@ -92,7 +92,7 @@ For depth, see the full docs set:
 | [docs/api-reference.md](docs/api-reference.md) | Every store and admin route: parameters, status codes, and exact response shapes, checked against source. |
 | [docs/settings.md](docs/settings.md) | All 14 settings, their defaults, what each gates, and the upgrade caveat (stored settings beat new defaults). |
 | [docs/seo-json-ld.md](docs/seo-json-ld.md) | The JSON-LD shapes the reference storefront emits, and why `aggregateRating` only appears once a product has at least one review. |
-| [docs/revalidation.md](docs/revalidation.md) | The subscriber + route-handler recipe for cache invalidation: all five events, the three cache tags, and why the endpoint needs a shared secret. |
+| [docs/revalidation.md](docs/revalidation.md) | The subscriber + route-handler recipe for cache invalidation: all eight subscribed events (an events table with an emitter column — two event names are emitted by more than one workflow), the three cache tags, and why the endpoint needs a shared secret. |
 
 ## Requirements
 
