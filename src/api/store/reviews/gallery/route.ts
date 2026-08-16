@@ -29,12 +29,15 @@ const GALLERY_CACHE_CONTROL = 'public, max-age=0, s-maxage=60, stale-while-reval
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const settings = await getReviewSettings(req.scope)
 
-  // Matches how every other store route in this plugin handles its own
-  // `enabled`-shaped setting (GET /store/products/:id/reviews,
-  // POST/DELETE /store/reviews/:id/vote): a merchant who switches the
-  // gallery off gets a 404, not an endpoint that keeps serving a feature
-  // nothing in the storefront links to anymore.
-  if (!settings.gallery_enabled) {
+  // The master `enabled` switch is checked first, same rule/status/message
+  // as every other store route (GET /store/products/:id/reviews,
+  // POST/DELETE /store/reviews/:id/vote): a merchant who switches reviews
+  // off store-wide must not keep serving every approved review's photos
+  // and videos from the one store route with no product or review scope
+  // at all. `gallery_enabled` is then checked as its own, narrower switch
+  // - it can take the gallery down without disabling reviews entirely, but
+  // it cannot keep the gallery up once `enabled` is off.
+  if (!settings.enabled || !settings.gallery_enabled) {
     throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Gallery is disabled')
   }
 

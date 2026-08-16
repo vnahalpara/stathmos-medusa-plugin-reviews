@@ -324,6 +324,47 @@ medusaIntegrationTestRunner({
         expect(response.status).toEqual(404)
       })
 
+      // I1 (Phase 4 final review): the route used to check only
+      // `gallery_enabled`, so a merchant who switched reviews off
+      // store-wide - `enabled: false` - kept serving every approved
+      // review's photos and videos from this one route. Real,
+      // gallery-visible media is seeded here specifically so this test
+      // would fail (200 with a full media payload) if the `enabled` half
+      // of the route's condition were ever removed again - an empty
+      // gallery would 404-or-empty either way and prove nothing.
+      it('404s when reviews are disabled store-wide, even though gallery_enabled is still true', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        const review = await service.createReviews({
+          product_id: 'prod_gallery_master_switch',
+          display_name: 'Guest',
+          rating: 5,
+          content: 'x'.repeat(20),
+          status: 'approved',
+        })
+        await service.createReviewMedias([
+          {
+            review_id: review.id,
+            type: 'image',
+            file_id: 'file_gallery_master_switch',
+            url: 'http://localhost/static/file_gallery_master_switch.png',
+            mime_type: 'image/png',
+            size_bytes: 100,
+          } satisfies MediaInput,
+        ])
+
+        await updateReviewSettingsWorkflow(container).run({ input: { enabled: false } })
+
+        const response = await api
+          .get('/store/reviews/gallery?product_id=prod_gallery_master_switch', {
+            headers: storeHeaders,
+          })
+          .catch((e) => e.response)
+
+        expect(response.status).toEqual(404)
+      })
+
       it('never exposes email, customer_id or replied_by', async () => {
         const container = getContainer()
         const service = container.resolve(REVIEW_MODULE)
