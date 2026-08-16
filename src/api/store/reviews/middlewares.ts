@@ -148,7 +148,13 @@ export type CreateReviewSchema = z.infer<typeof CreateReviewSchema>
 export const UpdateReviewSchema = z
   .object({
     rating: z.number().int().min(1).max(5).optional(),
-    title: z.string().max(200).optional(),
+    // `.nullable()` (not just `.optional()`) so `{ title: null }` clears a
+    // previously-set title - applyReviewEditStep's Input type and its
+    // `input.title !== undefined ? input.title : review.title` branch were
+    // already written to handle exactly this; the schema was the gap. This
+    // is the only way a customer can remove a title once they've added
+    // one, so keep the capability even though most edits never use it.
+    title: z.string().max(200).nullable().optional(),
     content: z.string().min(1).max(20000).optional(),
   })
   .strict()

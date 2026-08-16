@@ -583,6 +583,56 @@ medusaIntegrationTestRunner({
         expect(stillOriginal.edited_at).toBeNull()
       })
 
+      // Fix round 1, MINOR: UpdateReviewSchema only allowed `title` to be
+      // omitted, never set to null - applyReviewEditStep's own
+      // `input.title !== undefined ? input.title : review.title` branch
+      // already handled null correctly, so the schema was the gap.
+      // `{ title: null }` is the only way a customer can remove a title
+      // they previously added; there is no other endpoint for it.
+      it('clears a title when the edit sets it to null, both in the response and in the storefront listing', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { allow_edit: true, require_approval: false },
+        })
+
+        const { customer, headers: customerHeaders } = await createCustomerAuthHeaders(
+          container,
+          'clear-title@example.com'
+        )
+
+        const review = await service.createReviews({
+          product_id: 'prod_edit_clear_title',
+          customer_id: customer.id,
+          display_name: 'Ada',
+          rating: 4,
+          title: 'A title the customer wants to remove',
+          content: 'Content that stays exactly as it is; only the title changes.',
+          status: 'approved',
+        })
+
+        const response = await api.post(
+          `/store/reviews/${review.id}`,
+          { title: null },
+          { headers: { ...storeHeaders, ...customerHeaders } }
+        )
+
+        expect(response.status).toEqual(200)
+        expect(response.data.review.title).toBeNull()
+
+        const [stored] = await service.listReviews({ id: review.id })
+        expect(stored.title).toBeNull()
+        expect(stored.content).toEqual(
+          'Content that stays exactly as it is; only the title changes.'
+        )
+
+        const listing = await api.get('/store/products/prod_edit_clear_title/reviews', {
+          headers: storeHeaders,
+        })
+        expect(listing.data.reviews[0].title).toBeNull()
+      })
+
       // Adjacency check, not an assumption: POST /store/reviews/:id sits at
       // the same path depth as the existing static POST
       // /store/reviews/uploads and GET /store/reviews/gallery routes. Both
