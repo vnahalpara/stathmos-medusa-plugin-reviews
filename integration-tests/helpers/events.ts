@@ -1,11 +1,12 @@
 /**
  * Event-emission assertions for HTTP suites.
  *
- * Generalises the local `replyEventNames` helper admin-reply.spec.ts
+ * Replaces the local `replyEventNames` helper admin-reply.spec.ts
  * introduced in Phase 3, which asserted on names alone. The revalidation
  * events (Phase 5) are only useful if their PAYLOAD carries the product a
  * subscriber has to invalidate, so this returns whole `{ name, data }`
- * messages rather than just names.
+ * messages rather than just names - including for the reply events, which
+ * now carry a `product_id` of their own.
  *
  * Three details that are not obvious and that a hand-rolled version keeps
  * getting wrong:
@@ -69,6 +70,7 @@ export const REVIEW_WORKFLOW_EVENTS = [
   'review.media.deleted',
   'review.reply.created',
   'review.reply.updated',
+  'review.reply.deleted',
   'review.settings.updated',
 ]
 
@@ -85,11 +87,4 @@ export function emittedEvents(
     .map((message) => message as EmittedEvent)
     .filter((message) => typeof message?.name === 'string' && matches(message.name))
     .map(({ name, data }) => ({ name, data }))
-}
-
-export function emittedEventNames(
-  emitSpy: jest.SpyInstance,
-  filter: string | string[]
-): string[] {
-  return emittedEvents(emitSpy, filter).map((event) => event.name)
 }

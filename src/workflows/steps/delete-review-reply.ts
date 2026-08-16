@@ -33,6 +33,15 @@ type Input = { review_id: string }
  * this one step, so nothing downstream can ever fail and trigger it.
  * Whoever adds a step after this one should know the recreate is lossy in
  * both id and timestamps before relying on it.
+ *
+ * Returns the parent review's `product_id` so the workflow can put it on
+ * `review.reply.deleted` - the reply row itself only knows `review_id`,
+ * and a subscriber invalidating a cached product page needs the product.
+ * Resolved BEFORE the delete, while there is still a row to resolve it
+ * from. It is `null` only if the reply outlived its review, which nothing
+ * in this plugin can currently produce (there is no delete-review route);
+ * the workflow documents what happens in that case rather than pretending
+ * it cannot.
  */
 export const deleteReviewReplyStep = createStep(
   'delete-review-reply',
@@ -47,10 +56,16 @@ export const deleteReviewReplyStep = createStep(
       throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Reply not found')
     }
 
+    const [review] = await service.listReviews({ id: existing.review_id }, { take: 1 })
+
     await service.deleteReviewReplies(existing.id)
 
     return new StepResponse(
-      { id: existing.id },
+      {
+        id: existing.id,
+        review_id: existing.review_id,
+        product_id: review?.product_id ?? null,
+      },
       {
         review_id: existing.review_id,
         content: existing.content,

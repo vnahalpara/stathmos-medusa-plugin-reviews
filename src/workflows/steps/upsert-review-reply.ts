@@ -18,6 +18,13 @@ type Input = { review_id: string; content: string; replied_by?: string }
  * as a create and which becomes an edit, atomically, so there is no window
  * for both to observe "no existing reply" and race each other into the
  * unique index.
+ *
+ * Returns the parent review's `product_id` alongside the reply so
+ * replyToReviewWorkflow can put it on its events. It costs nothing: the
+ * review is already loaded above for the existence check. A reply renders
+ * inside its review on the product page, so a subscriber invalidating a
+ * cache needs the product, and a reply row carries only `review_id`.
+ * Never null - the NOT_FOUND above guarantees the review exists.
  */
 export const upsertReviewReplyStep = createStep(
   'upsert-review-reply',
@@ -67,7 +74,7 @@ export const upsertReviewReplyStep = createStep(
       // two return sites, silently dropping whichever field only one
       // branch declared.
       return new StepResponse(
-        { reply, created: false },
+        { reply, created: false, product_id: review.product_id },
         {
           created: false,
           id: reply.id,
@@ -77,7 +84,7 @@ export const upsertReviewReplyStep = createStep(
     }
 
     return new StepResponse(
-      { reply, created: true },
+      { reply, created: true, product_id: review.product_id },
       { created: true, id: reply.id, previous_content: '' }
     )
   },
