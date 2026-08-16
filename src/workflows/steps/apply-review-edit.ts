@@ -84,9 +84,20 @@ export const applyReviewEditStep = createStep(
     // a brand-new submission: `require_approval` on means edited text has
     // not been reviewed, so the review must go back to `pending` - the
     // whole point of re-moderation - and stay approved otherwise.
-    const status: 'pending' | 'approved' = settings.require_approval
-      ? 'pending'
-      : 'approved'
+    //
+    // BUT a review whose current status is `rejected` is never allowed to
+    // fall through to `approved`, even when require_approval is off. Do
+    // not "simplify" this back to the require_approval-only rule above:
+    // require_approval is a store-wide POLICY about content nobody has
+    // looked at yet, whereas a rejection is a human moderator's judgment
+    // about THIS SPECIFIC review. Auto-approval settings must never let an
+    // edit silently overturn that judgment - only a moderator re-approving
+    // it should. Editing stays allowed (the customer can still fix a
+    // rejected review), they just cannot republish it themselves; it lands
+    // in `pending` for a human to look at again, same as any other edit
+    // under require_approval.
+    const status: 'pending' | 'approved' =
+      review.status === 'rejected' || settings.require_approval ? 'pending' : 'approved'
 
     const previous: PreviousState = {
       id: review.id,

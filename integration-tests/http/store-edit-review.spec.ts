@@ -308,6 +308,99 @@ medusaIntegrationTestRunner({
         expect(listing.data.reviews[0].rating).toEqual(4)
       })
 
+      // Fix round 1, CRITICAL: require_approval: false must never let an
+      // edit resurrect a review a moderator explicitly rejected. Policy
+      // ("nobody has reviewed this yet, publish it") and a human's specific
+      // judgment about THIS review are different things - only a moderator
+      // reverses the latter. The review lands in `pending` regardless of
+      // require_approval, exactly like any other edit that needs a human
+      // to look at it again.
+      it('sends an edited REJECTED review to pending even when require_approval is off, and keeps it off the storefront', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { allow_edit: true, require_approval: false },
+        })
+
+        const { customer, headers: customerHeaders } = await createCustomerAuthHeaders(
+          container,
+          'rejected-edit@example.com'
+        )
+
+        const review = await service.createReviews({
+          product_id: 'prod_edit_rejected_stays_pending',
+          customer_id: customer.id,
+          display_name: 'Ada',
+          rating: 1,
+          content: 'Content a moderator rejected; editing it must not republish it.',
+          status: 'rejected',
+          rejection_reason: 'Off-topic',
+        })
+
+        const response = await api.post(
+          `/store/reviews/${review.id}`,
+          { content: 'Fixed content the customer hopes will be approved this time.' },
+          { headers: { ...storeHeaders, ...customerHeaders } }
+        )
+
+        expect(response.status).toEqual(200)
+        expect(response.data.review.status).toEqual('pending')
+        expect(response.data.review.edited_at).not.toBeNull()
+
+        const listing = await api.get(
+          '/store/products/prod_edit_rejected_stays_pending/reviews',
+          { headers: storeHeaders }
+        )
+        expect(listing.data.count).toEqual(0)
+
+        const [stored] = await service.listReviews({ id: review.id })
+        expect(stored.status).toEqual('pending')
+      })
+
+      // The companion case, so the fix above is not over-broad: an
+      // APPROVED review edited under the same require_approval: false
+      // settings must still stay approved and still be listed - only a
+      // prior REJECTED status forces the pending override.
+      it('keeps an edited APPROVED review approved and listed under the same require_approval: false settings', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { allow_edit: true, require_approval: false },
+        })
+
+        const { customer, headers: customerHeaders } = await createCustomerAuthHeaders(
+          container,
+          'approved-edit-not-overbroad@example.com'
+        )
+
+        const review = await service.createReviews({
+          product_id: 'prod_edit_approved_not_overbroad',
+          customer_id: customer.id,
+          display_name: 'Ada',
+          rating: 4,
+          content: 'Content that was approved and must remain approved after a minor edit.',
+          status: 'approved',
+        })
+
+        const response = await api.post(
+          `/store/reviews/${review.id}`,
+          { content: 'A small fix to already-approved content.' },
+          { headers: { ...storeHeaders, ...customerHeaders } }
+        )
+
+        expect(response.status).toEqual(200)
+        expect(response.data.review.status).toEqual('approved')
+
+        const listing = await api.get(
+          '/store/products/prod_edit_approved_not_overbroad/reviews',
+          { headers: storeHeaders }
+        )
+        expect(listing.data.count).toEqual(1)
+        expect(listing.data.reviews[0].id).toEqual(review.id)
+      })
+
       it('refuses the edit with 400 when allow_edit is off, leaving the review untouched', async () => {
         const container = getContainer()
         const service = container.resolve(REVIEW_MODULE)
