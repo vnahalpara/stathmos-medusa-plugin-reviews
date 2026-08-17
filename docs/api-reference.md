@@ -13,8 +13,10 @@ require an authenticated admin session — Medusa core protects every
 `/admin/*` route automatically, so none of these declare their own auth
 middleware.
 
-**Error shape.** Every thrown error is a `MedusaError`, which the
-framework maps to an HTTP status by `type`:
+## Error shape
+
+Every thrown error is a `MedusaError`, which the framework maps to an
+HTTP status by `type`:
 
 | `MedusaError.Types` | HTTP status | Response body's `type` field |
 |---|---|---|
@@ -28,6 +30,32 @@ framework maps to an HTTP status by `type`:
 `NOT_ALLOWED` and `INVALID_DATA` are both HTTP 400 — a caller that needs
 to distinguish "the store's settings forbid this" from "your input is
 malformed" has to read the JSON body's `type` field, not the status code.
+
+**`CONFLICT` and `DUPLICATE_ERROR` are the two types whose `code` and
+`message` the framework itself rewrites before the response is sent** —
+this happens in `@medusajs/framework`'s own `errorHandler` middleware, not
+in this plugin, and it applies to every `CONFLICT`/`DUPLICATE_ERROR`
+thrown anywhere in Medusa, not just this plugin's. For `CONFLICT`
+specifically (the type this plugin actually throws — see the vote route
+below), the wire response is always:
+
+```json
+{
+  "code": "invalid_state_error",
+  "type": "conflict",
+  "message": "The request conflicted with another request. You may retry the request with the provided Idempotency-Key."
+}
+```
+
+**regardless of what message the `MedusaError` was constructed with.**
+Only `type` (and the `409` status) are dependable for a `CONFLICT` error;
+a caller matching on `code` or `message` for one of these will never match
+what this plugin's own source says it throws. Verified by executing the
+shipped `error-handler.js` directly against a `MedusaError(CONFLICT, ...)`,
+not inferred from reading it. Every *other* documented error message in
+this reference was checked byte-for-byte against source and passes through
+the handler untouched — `CONFLICT` (one row, in the vote route below) is
+the sole exception.
 
 ---
 
@@ -296,7 +324,16 @@ wrapper collapses every guest to one identity.
 | Reviews disabled | 404 | `not_found` | `Reviews are disabled` |
 | Review not found | 404 | `not_found` | `Review not found` |
 | Review not `approved` | 400 | `not_allowed` | `Cannot vote on a review that has not been approved` |
-| Duplicate vote from the same identity | 409 | `conflict` | `You have already voted this review as helpful.` |
+| Duplicate vote from the same identity | 409 | `conflict` | `The request conflicted with another request. You may retry the request with the provided Idempotency-Key.` |
+
+**That message is the framework's own generic `CONFLICT` text, not this
+plugin's.** The service actually throws
+`MedusaError(CONFLICT, 'You have already voted this review as helpful.')`
+(`src/modules/review/service.ts`), but — see the note under [Error
+shape](#error-shape) above — the framework's error handler unconditionally
+rewrites both `code` and `message` for `CONFLICT`. Do not classify this
+response by message string; `type: "conflict"` and the `409` status are
+the only fields a client can rely on for this row.
 
 A signed-in customer is deduped by `customer_id`; a guest by `voter_hash`
 (`sha256(ip + user-agent + salt)`). Never both for the same row — enforced
@@ -460,6 +497,11 @@ for why this distinction matters beyond caching.
 **first** product among the batch's reviews. A batch scoped to one product
 (the normal admin-UI case) is fully correct; a batch spanning multiple
 products leaves every product after the first stale until its next write.
+**If you've wired up the [revalidation recipe](./revalidation.md), this
+limitation interacts with it badly** — revalidating a tag whose underlying
+data was never actually recomputed re-caches the stale value instead of
+fixing it; see
+[revalidation.md](./revalidation.md#known-interaction-batch-moderation-across-products-makes-this-recipe-re-cache-a-stale-summary).
 
 ---
 
@@ -504,9 +546,11 @@ Pin and/or hide a media item — the reversible counterpart to `DELETE`.
 ```
 
 **Response `200`:** `{ media: { id, pinned_at, hidden_at } }`. Emits
-`review.media.curated` — the most time-critical event this plugin emits,
-since the gallery route's cache means hiding can otherwise take ~6 minutes
-to actually stop being served.
+`review.media.curated` (only if the media had a resolvable product — the
+identical `when(...)` guard `DELETE /admin/reviews/media/:id` above uses,
+and covered by the same class of test) — the most time-critical event this
+plugin emits, since the gallery route's cache means hiding can otherwise
+take ~6 minutes to actually stop being served.
 
 ---
 

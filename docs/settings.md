@@ -60,7 +60,7 @@ default change of your own: **existing stores do not silently inherit it.**
 | `allow_video` | boolean | `true` | Media attach | Additional gate on top of `allow_media`; has no effect while `allow_media` is off. |
 | `max_media_per_review` | integer | `5` | Media attach | 0–20. A **per-review** cap (already-attached count + incoming), enforced when media is *attached* — splitting an upload across several calls cannot exceed this. |
 | `max_image_size_mb` | integer | `5` | Upload | 1–50. |
-| `max_video_size_mb` | integer | `50` | Upload | 1–100. **Values above 100 have no effect** — hard-capped at 100MB/file at the transport layer regardless of what this is set to. |
+| `max_video_size_mb` | integer | `50` | Upload | 1–100. **Cannot be set above 100 — `POST /admin/reviews/settings` rejects it (400)**, matching the 100MB/file transport-layer ceiling: a value the schema allowed but the transport layer silently ignored would be a merchant-facing setting that lies about its own effect. |
 | `allow_edit` | boolean | `true` | `POST /store/reviews/:id` | **See [below](#allow_edit) — the upgrade caveat applies directly to this field.** Guests can never edit, regardless of this setting. |
 | `one_review_per_customer` | boolean | `true` | `POST /store/reviews` | A signed-in customer may submit only one review per product. |
 | `min_content_length` | integer | `10` | Submit + edit | 0–1000. Enforced by the same function (`assertContentLengthWithinBounds`) on both create and edit, so the two can never independently drift on what "too short" means. |
@@ -124,4 +124,8 @@ public rating summary for only the **first** product among the batch's
 reviews (see [api-reference.md](./api-reference.md#post-adminreviewsbatchstatus)).
 A batch scoped to one product — the normal admin-UI case — is unaffected;
 a batch spanning multiple products leaves every product after the first
-stale until its next write, independent of any setting.
+stale until its next write, independent of any setting. A host running
+the [revalidation recipe](./revalidation.md) should read
+[this interaction](./revalidation.md#known-interaction-batch-moderation-across-products-makes-this-recipe-re-cache-a-stale-summary)
+specifically — revalidating doesn't just fail to fix the staleness here,
+it re-caches it.

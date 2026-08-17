@@ -100,6 +100,40 @@ never on the storefront to begin with, so there is nothing to invalidate.
 Subscribing to it would be a no-op that costs a request on every
 submission.
 
+### Known interaction: batch moderation across products makes this recipe re-cache a stale summary
+
+Two things are each documented on their own — a bulk-moderation limitation
+and this revalidation recipe's own bluntness above — but not their
+interaction, which is where a host actually meets the surprise.
+
+`POST /admin/reviews/batch/status` recomputes the public rating summary
+for only the **first** product among the batch's reviews
+(`moderate-reviews.ts` — see the [known limitation in
+api-reference.md](./api-reference.md#post-adminreviewsbatchstatus)). But
+the `review.approved`/`review.rejected`/`review.updated` event this action
+emits carries `product_ids` for **every** product in the batch, and — per
+"invalidates all of it, every time" above — the revalidation route
+`revalidateTag()`s `review-stats-<product_id>` for every one of those
+products, including the ones whose summary was never actually recomputed.
+
+The next storefront read after that isn't just still stale — it **re-caches**
+the stale value under a fresh cache entry, because the tag was just
+invalidated and the backend it re-fetches from still has the old, un-recomputed
+summary sitting in its database. Revalidating without the underlying data
+having actually changed doesn't shorten the staleness window; it resets
+the clock on it. A host that assumes "I have the revalidation recipe
+wired up, so my stats can't be stale for long" is wrong specifically for
+a multi-product batch action — the single-product case (the normal
+admin-UI path) has no such gap, since there both product-scoped tags
+really do carry the fresh value forward.
+
+There is no docs-only fix for this — it needs `moderateReviewsWorkflow`
+to recompute every product in a batch, not just the first, which is a
+`src/` change out of scope here. If you build tooling that batches ids
+across products, call the endpoint once per product instead of combining
+ids from different products in one request; that sidesteps the gap
+entirely rather than working around it.
+
 A subscriber collecting product ids across all of the shapes above needs
 to handle every field that might be present:
 

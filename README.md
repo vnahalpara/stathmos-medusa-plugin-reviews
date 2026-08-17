@@ -254,7 +254,7 @@ bundled admin UI's settings page (Settings → Reviews) exposes all 14.
 | `allow_video` | `true` | Lets shoppers attach video, in addition to photos. Has no effect while `allow_media` is off. |
 | `max_media_per_review` | `5` | 0–20. |
 | `max_image_size_mb` | `5` | 1–50. |
-| `max_video_size_mb` | `50` | 1–100. **Values above 100 have no effect.** Uploads are capped at 100MB per file at the transport layer regardless of what this is set to — see [Photo and video uploads](#photo-and-video-uploads). |
+| `max_video_size_mb` | `50` | 1–100. **Cannot be set above 100 — the API rejects it (400).** The bound matches the 100MB-per-file transport-layer ceiling — see [Photo and video uploads](#photo-and-video-uploads). |
 | `allow_edit` | `true` | Lets a signed-in customer edit their own review's rating, title and content after submitting it — see [Review editing](#review-editing). Guests can never edit, regardless of this setting. **The `true` default applies only to a fresh install that has never saved a settings row.** `mergeSettings()` copies a stored value over the new default, so a store that saved settings at any point before Phase 4 keeps its stored `false` and must switch this on itself in Settings → Reviews to enable editing. This is the safe outcome, not an oversight: it is exactly what keeps the riskier `allow_edit: true` + `require_approval: false` pairing from ever appearing silently on an upgrade — that pairing can only exist because a merchant explicitly turned both settings on. |
 | `one_review_per_customer` | `true` | A signed-in customer may submit only one review per product. |
 | `min_content_length` | `10` | 0–1000. |
@@ -682,7 +682,10 @@ storefront will show the old average/count until that product is next
 touched by another write (a new review, or its own moderation action). If
 you build tooling that batches ids across products, call the endpoint once
 per product instead of combining ids from different products in one
-request.
+request. **If you've wired up
+[docs/revalidation.md](docs/revalidation.md)'s recipe, this limitation
+interacts with it badly rather than being independent of it** — see
+[that interaction documented there](docs/revalidation.md#known-interaction-batch-moderation-across-products-makes-this-recipe-re-cache-a-stale-summary).
 
 ## Development
 

@@ -11,9 +11,10 @@ editing released sections by hand.
 Phase 5: a Next.js storefront recipe, JSON-LD structured data, a
 cache-revalidation recipe, and the full documentation set
 (`docs/storefront-nextjs.md`, `docs/api-reference.md`, `docs/settings.md`,
-`docs/seo-json-ld.md`, `docs/revalidation.md`). No `src/` changes in this
-release beyond the additive events needed to make the revalidation recipe
-correct — see below.
+`docs/seo-json-ld.md`, `docs/revalidation.md`). `src/` changes in this
+release are limited to the additive events needed to make the
+revalidation recipe correct, and one compensation-correctness fix the new
+reply-deletion event exposed — both described below.
 
 **The storefront finding of this phase: helpful votes must be cast from
 the shopper's own browser, never routed through a Next.js `"use server"`
@@ -63,6 +64,22 @@ are emitted by more than one workflow, with different payload shapes), all
 eight subscribed events, the three cache tags, and why the endpoint fails
 closed (503) when its shared secret is unset rather than falling open into
 an unauthenticated cache-busting endpoint.
+
+**`deleteReviewReplyStep`'s rollback now restores a deleted reply
+verbatim — same id, same `created_at`/`updated_at` — instead of
+recreating it as a fresh row.** This compensation path was documented as
+lossy from Phase 3 onward but was inert: `deleteReviewReplyWorkflow` had
+only one step, so nothing downstream could ever fail and trigger a
+rollback. Adding `emitEventStep` for `review.reply.deleted` in this same
+phase made it reachable in production for the first time — an event-bus
+failure now rolls the delete back for real, on a merchant's actual reply
+— so the lossy restore stopped being a documented-but-harmless gap and
+became a real one: a reply written months ago would come back stamped
+"just now," under a new id anything already holding the old one (an open
+admin tab, a log line) would no longer resolve to. Fixed by snapshotting
+and re-inserting the full row, verified by a test that backdates a reply
+specifically so a timestamp assertion can't pass by the coincidence of
+running moments after the original write.
 
 **Limitations documented, not fixed, in this phase** — each is a
 deliberate trade-off with its reasoning written down in

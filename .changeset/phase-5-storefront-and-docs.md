@@ -24,14 +24,25 @@ IP it degrades to guest voting silently not working. Forwarding
 any client can set that header, making dedup trivially defeatable and
 letting an attacker forge a chosen victim's hash.
 
-Three additive events were added to close gaps found while building the
+Several additive events were added to close gaps found while building the
 storefront that consumes them: `review.updated` also fires from the edit
 workflow, `review.approved` also fires from `createReviewWorkflow`
 alongside `review.created` when a `require_approval: false` store
-auto-publishes, and `review.media.curated`/`review.media.deleted` fire
-from media curation and deletion. A moderator resetting a review to
-`pending` now correctly emits `review.updated` rather than a wrongly-fired
+auto-publishes, `review.media.curated`/`review.media.deleted` fire from
+media curation and deletion, and `review.reply.created`/`review.reply.updated`
+now carry `product_id` alongside `review_id` (previously `review_id`
+only) with a new `review.reply.deleted` event covering a merchant
+deleting a reply outright. A moderator resetting a review to `pending`
+now correctly emits `review.updated` rather than a wrongly-fired
 `review.rejected`. All additive, no schema change.
+
+**`deleteReviewReplyStep`'s rollback now restores a deleted reply
+verbatim (same id, same timestamps) instead of recreating it as a fresh
+row.** This compensation path was inert until this release —
+`deleteReviewReplyWorkflow` had only one step, so nothing downstream
+could fail and trigger it — and the new `review.reply.deleted` event
+above is what made it reachable: an event-bus failure now rolls the
+delete back for real, on a merchant's actual reply.
 
 **Known limitations, documented rather than fixed:** signed-in shoppers
 are deduped as guests unless a host configures Medusa session auth on the

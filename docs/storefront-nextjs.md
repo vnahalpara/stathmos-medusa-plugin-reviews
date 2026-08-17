@@ -27,7 +27,7 @@ wrong produces no error at all — just guest voting that quietly stops
 working after the first vote, forever, with nothing logged anywhere.**
 
 The plugin identifies a **guest** voter as
-`sha256(ip + user-agent + salt)` (see [`POST /store/reviews/:id/vote`](./api-reference.md#post-store-reviewsidvote)
+`sha256(ip + user-agent + salt)` (see [`POST /store/reviews/:id/vote`](./api-reference.md#post-storereviewsidvote)
 and `src/settings/voter-hash.ts` in the plugin). If your storefront casts
 that vote through a Next.js `"use server"` action, a route handler, or any
 other server-side wrapper, the backend sees **your Next.js server's own IP
@@ -328,6 +328,24 @@ from the server and render on the offending file's own thumbnail.
 This is the code the [warning at the top of this document](#helpful-votes-must-be-cast-from-the-browser-never-from-a-server-action)
 protects. The whole point is this `fetch()` call, verbatim:
 
+**Prerequisite: the backend's `storeCors` must include the storefront's
+origin.** This is the only call in the whole plugin the shopper's browser
+makes directly against the Medusa backend, which makes it the only one
+that triggers a real cross-origin request — a preflighted one, since it
+sends a custom header (`x-publishable-api-key`) and `credentials: "include"`.
+If the backend's `projectConfig.http.storeCors`
+(`STORE_CORS` in a standard Medusa `.env`) doesn't list the storefront's
+origin, the browser's preflight `OPTIONS` request is refused and **every
+vote fails before it reaches this plugin at all** — silently from a
+shopper's perspective (a console CORS error, no application-level error to
+catch or render). This is easy to miss if your storefront and backend
+share an origin in dev, and easy to get right by accident in the Medusa
+starter specifically, because its `.env` already sets `STORE_CORS` to the
+storefront's own origin for the storefront's ordinary server-side Store
+API calls — that setting is doing double duty for the vote button too,
+whether or not anyone realizes it. On a split deployment, confirm this
+explicitly rather than assuming it's covered.
+
 ```ts
 // vote-button.tsx — "use client"
 const BACKEND_URL = process.env.NEXT_PUBLIC_MEDUSA_BACKEND_URL ?? "http://localhost:9000"
@@ -544,7 +562,7 @@ a correction to everyone else's cached page.
 
 ### 5. `thumbnail_url` is always `null` in this version
 
-Covered [above](#gallery-grid-tsx--gallery-lightbox-tsx). No video poster
+Covered [above](#gallery-gallery-gridtsx--gallery-lightboxtsx). No video poster
 generation exists in this plugin release. Supply your own poster image at
 render time if you need one; don't build a UI that assumes the plugin will
 someday populate this field for existing data — you would need to
@@ -553,7 +571,7 @@ generation, since it would only apply going forward.
 
 ### 6. Gallery cache worst case is ~6 minutes, not 1
 
-Covered [above](#gallery-grid-tsx--gallery-lightbox-tsx) — `s-maxage=60`
+Covered [above](#gallery-gallery-gridtsx--gallery-lightboxtsx) — `s-maxage=60`
 plus `stale-while-revalidate=300` composes to a ~360 second worst case at
 a shared cache/CDN, not the 60-second figure in isolation.
 
@@ -652,6 +670,21 @@ plugin requirement:
   is specific to this starter's default auth wiring, not universal to
   Next.js storefronts. A storefront that already establishes a Medusa
   session cookie on the backend origin doesn't have this gap.
+- **`storeCors` is not starter-specific, but *which origin* it must list
+  is yours to set.** Every Medusa v2 storefront needs
+  `projectConfig.http.storeCors` on the backend to include the
+  storefront's own origin — this isn't an artifact of the reference
+  starter, it's how Medusa's CORS middleware works for any `/store/*`
+  route. What's easy to miss is that the vote button is the **one** call
+  in this whole recipe that makes the browser cross-origin request this
+  requirement actually protects; every other read and write goes through
+  your Next.js server, which never triggers a browser preflight at all. A
+  storefront that already has `storeCors` set correctly for its ordinary
+  Store API calls (as the reference starter's `.env` does) gets this for
+  free without anyone realizing the vote button depended on it; one that
+  doesn't will see the vote button fail with a console CORS error and
+  nothing else — see the [prerequisite note](#helpful-votes-the-one-client-component)
+  above the `fetch()` call itself for the detail.
 
 None of the above changes what the vote button's `fetch()` call must do —
 run in the browser, hit the backend origin directly, send credentials.
