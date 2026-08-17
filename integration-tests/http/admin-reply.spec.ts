@@ -2,21 +2,7 @@ import { medusaIntegrationTestRunner } from '@medusajs/test-utils'
 import { Modules } from '@medusajs/framework/utils'
 import { REVIEW_MODULE } from '../../src/modules/review'
 import { createAdminUser, adminHeaders } from '../helpers/admin'
-
-/**
- * emitEventStep calls `eventBus.emit(message)` with `message` always an
- * array of `{ name, data, ... }` objects (see
- * @medusajs/core-flows/common/steps/emit-event.js) - flattened here and
- * filtered to this plugin's reply events, since other workflows invoked by
- * test setup (creating the admin user, creating the review) emit their own
- * unrelated events on the same spied bus.
- */
-function replyEventNames(emitSpy: jest.SpyInstance): string[] {
-  return emitSpy.mock.calls
-    .flatMap(([messages]) => (Array.isArray(messages) ? messages : [messages]))
-    .map((message) => (message as { name: string }).name)
-    .filter((name) => name.startsWith('review.reply.'))
-}
+import { emittedEvents, REVIEW_WORKFLOW_EVENTS } from '../helpers/events'
 
 medusaIntegrationTestRunner({
   inApp: true,
@@ -138,21 +124,53 @@ medusaIntegrationTestRunner({
         expect(all).toHaveLength(1)
       })
 
-      it('emits review.reply.created on first reply and review.reply.updated on an edit', async () => {
-        const eventBus = getContainer().resolve(Modules.EVENT_BUS)
-        const emitSpy = jest.spyOn(eventBus, 'emit')
+      /**
+       * Two distinct events (a first reply is not an edit), each carrying
+       * the PRODUCT the reply is rendered on - a reply row knows only its
+       * `review_id`, and a subscriber invalidating a cached product page
+       * cannot act on that.
+       *
+       * The decoy is free here and load-bearing: the `beforeEach` review
+       * on `prod_reply_admin` was created BEFORE this one, so an
+       * unfiltered `listReviews(..., { take: 1 })` in the step that
+       * resolves the product returns that one instead, and the assertion
+       * below fails on the wrong product id. A single-review version of
+       * this test would pass either way.
+       */
+      it("emits review.reply.created then review.reply.updated, each carrying the review's product_id", async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
 
-        await api.post(`/admin/reviews/${reviewId}/reply`, { content: 'Thanks!' }, adminHeaders)
-        expect(replyEventNames(emitSpy)).toEqual(['review.reply.created'])
+        const review = await service.createReviews({
+          product_id: 'prod_reply_events',
+          display_name: 'Ada',
+          rating: 5,
+          content: 'x'.repeat(20),
+        })
+
+        const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+        await api.post(`/admin/reviews/${review.id}/reply`, { content: 'Thanks!' }, adminHeaders)
+        expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+          {
+            name: 'review.reply.created',
+            data: { review_id: review.id, product_id: 'prod_reply_events' },
+          },
+        ])
 
         emitSpy.mockClear()
 
         await api.post(
-          `/admin/reviews/${reviewId}/reply`,
+          `/admin/reviews/${review.id}/reply`,
           { content: 'Thanks, updated.' },
           adminHeaders
         )
-        expect(replyEventNames(emitSpy)).toEqual(['review.reply.updated'])
+        expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+          {
+            name: 'review.reply.updated',
+            data: { review_id: review.id, product_id: 'prod_reply_events' },
+          },
+        ])
 
         emitSpy.mockRestore()
       })
@@ -336,14 +354,45 @@ medusaIntegrationTestRunner({
         expect(err.status).toEqual(401)
       })
 
-      it('does not emit an event on delete', async () => {
-        await api.post(`/admin/reviews/${reviewId}/reply`, { content: 'Thanks!' }, adminHeaders)
+      /**
+       * This test used to assert the OPPOSITE - "does not emit an event on
+       * delete" - and it was right at the time: nothing consumed such an
+       * event, and the workflow's docstring said to add one when a real
+       * consumer appeared. Phase 5's storefront is that consumer. A
+       * storefront caches the reply as part of the review list it renders,
+       * so once a merchant deletes a reply - posted in error, on the wrong
+       * review, or saying something they should not have - the row being
+       * gone no longer means shoppers stop seeing it. Without this event
+       * nothing can invalidate that page.
+       *
+       * Same decoy as the create/update test: the `beforeEach` review on
+       * `prod_reply_delete` predates the one built here, so a product
+       * lookup that lost its filter would report the wrong product.
+       */
+      it('emits review.reply.deleted with the product_id when a reply is removed', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
 
-        const eventBus = getContainer().resolve(Modules.EVENT_BUS)
-        const emitSpy = jest.spyOn(eventBus, 'emit')
+        const review = await service.createReviews({
+          product_id: 'prod_reply_delete_events',
+          display_name: 'Ada',
+          rating: 5,
+          content: 'x'.repeat(20),
+        })
 
-        await api.delete(`/admin/reviews/${reviewId}/reply`, adminHeaders)
-        expect(replyEventNames(emitSpy)).toEqual([])
+        await api.post(`/admin/reviews/${review.id}/reply`, { content: 'Thanks!' }, adminHeaders)
+
+        const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+        const response = await api.delete(`/admin/reviews/${review.id}/reply`, adminHeaders)
+        expect(response.status).toEqual(200)
+
+        expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+          {
+            name: 'review.reply.deleted',
+            data: { review_id: review.id, product_id: 'prod_reply_delete_events' },
+          },
+        ])
 
         emitSpy.mockRestore()
       })

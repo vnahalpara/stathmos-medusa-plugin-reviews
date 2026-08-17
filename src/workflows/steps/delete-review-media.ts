@@ -38,6 +38,14 @@ type Input = { id: string }
  *
  * The second outcome is unacceptable for this feature, so file-first is the
  * only order that fails safely.
+ *
+ * Returns the deleted media's `product_id` alongside its id, resolved from
+ * the parent review BEFORE the row is destroyed - afterwards there is
+ * nothing left to resolve it from. Same reasoning as setMediaCurationStep:
+ * a media row carries no product, and both the `review.media.deleted`
+ * event and the caller's stats recompute need one. `product_id` is null
+ * exactly when `review_id` is (an unattached upload, which no storefront
+ * page has ever shown).
  */
 export const deleteReviewMediaStep = createStep(
   'delete-review-media',
@@ -49,12 +57,20 @@ export const deleteReviewMediaStep = createStep(
       throw new MedusaError(MedusaError.Types.NOT_FOUND, 'Media not found')
     }
 
+    const [review] = media.review_id
+      ? await service.listReviews({ id: media.review_id }, { take: 1 })
+      : []
+
     await deleteFilesWorkflow(container).run({
       input: { ids: [media.file_id] },
     })
 
     await service.deleteReviewMedias(input.id)
 
-    return new StepResponse({ id: media.id, review_id: media.review_id })
+    return new StepResponse({
+      id: media.id,
+      review_id: media.review_id,
+      product_id: review?.product_id ?? null,
+    })
   }
 )

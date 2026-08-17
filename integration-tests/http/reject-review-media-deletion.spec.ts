@@ -6,6 +6,7 @@ import { uploadReviewMediaWorkflow } from '../../src/workflows/upload-review-med
 import { createReviewWorkflow } from '../../src/workflows/create-review'
 import { updateReviewSettingsWorkflow } from '../../src/workflows/update-review-settings'
 import { createAdminUser, adminHeaders } from '../helpers/admin'
+import { emittedEvents, REVIEW_WORKFLOW_EVENTS } from '../helpers/events'
 
 async function pngBase64(background: string): Promise<string> {
   const buf = await sharp({ create: { width: 4, height: 4, channels: 3, background } })
@@ -81,6 +82,54 @@ medusaIntegrationTestRunner({
       for (const item of media) {
         await expect(fileService.getAsBuffer(item.file_id)).rejects.toThrow()
       }
+    })
+
+    /**
+     * The reject cascade deliberately does NOT emit `review.media.deleted`
+     * per destroyed item, and this test is where that decision is written
+     * down so it cannot be "fixed" by accident.
+     *
+     * Media has no visibility of its own - the model carries no status
+     * column, precisely so approval lives in one place - so a photo stops
+     * being public the moment its review's status changes, not when its
+     * row is destroyed some milliseconds later. `review.rejected` already
+     * announces that transition and already carries `product_ids`, so the
+     * cache is correct before the cascade even starts. A per-item event
+     * would add nothing a subscriber could act on, while turning one
+     * rejection into 1 + N events (and N revalidation round trips) for a
+     * review with N photos.
+     *
+     * The single-photo `DELETE /admin/reviews/media/:id` path is the
+     * opposite case and does emit: there, no review status changed, so
+     * without an event nothing tells a cache anything happened at all.
+     */
+    it('a rejection announces itself once, and does not also emit review.media.deleted per photo', async () => {
+      const container = getContainer()
+      const { review } = await reviewWithMedia(container, 'prod_reject_media_events', 2)
+
+      const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+      const response = await api.post(
+        `/admin/reviews/${review.id}/reject`,
+        { rejection_reason: 'Offensive' },
+        adminHeaders
+      )
+      expect(response.status).toEqual(200)
+
+      // Both photos really were destroyed by this request - otherwise the
+      // assertion below would be trivially satisfied by a cascade that
+      // never ran.
+      const service = container.resolve(REVIEW_MODULE)
+      expect(await service.listReviewMedias({ review_id: review.id })).toHaveLength(0)
+
+      expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+        {
+          name: 'review.rejected',
+          data: { ids: [review.id], product_ids: ['prod_reject_media_events'] },
+        },
+      ])
+
+      emitSpy.mockRestore()
     })
 
     it('approving a review with media leaves the media intact', async () => {

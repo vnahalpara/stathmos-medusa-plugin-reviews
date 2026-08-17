@@ -7,6 +7,7 @@ import { updateReviewSettingsWorkflow } from '../../src/workflows/update-review-
 import { createReviewWorkflow } from '../../src/workflows/create-review'
 import { uploadReviewMediaWorkflow } from '../../src/workflows/upload-review-media'
 import { createCustomerAuthHeaders, getPublishableKeyHeaders } from '../helpers/store'
+import { emittedEvents, REVIEW_WORKFLOW_EVENTS } from '../helpers/events'
 
 async function pngBase64(background: string): Promise<string> {
   const buf = await sharp({ create: { width: 4, height: 4, channels: 3, background } })
@@ -306,6 +307,92 @@ medusaIntegrationTestRunner({
         })
         expect(listing.data.count).toEqual(1)
         expect(listing.data.reviews[0].rating).toEqual(4)
+      })
+
+      /**
+       * The edit workflow emitted nothing at all until Phase 5, which made
+       * the transition below invisible to any host caching a product page:
+       * under `require_approval`, an edit sends an APPROVED review back to
+       * `pending`, i.e. removes it from the storefront - and a cached PDP
+       * would keep serving it, text and all, for the whole ISR window.
+       *
+       * Asserted under both settings on purpose. The pending case is the
+       * one that must never be missed; the still-approved case is here
+       * because a subscriber revalidating on this event has to fire for an
+       * ordinary typo fix too - the old text is just as cached as a
+       * withdrawn review is.
+       */
+      it('emits review.updated with the product_id on every edit, whether it stays approved or returns to pending', async () => {
+        const container = getContainer()
+        const service = container.resolve(REVIEW_MODULE)
+        const emitSpy = jest.spyOn(container.resolve(Modules.EVENT_BUS), 'emit')
+
+        const { customer, headers: customerHeaders } = await createCustomerAuthHeaders(
+          container,
+          'edit-events@example.com'
+        )
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { allow_edit: true, require_approval: false },
+        })
+
+        const staysApproved = await service.createReviews({
+          product_id: 'prod_edit_event_approved',
+          customer_id: customer.id,
+          display_name: 'Ada',
+          rating: 2,
+          content: 'Content long enough to satisfy the configured minimum bound.',
+          status: 'approved',
+        })
+
+        emitSpy.mockClear()
+
+        const approvedEdit = await api.post(
+          `/store/reviews/${staysApproved.id}`,
+          { rating: 4 },
+          { headers: { ...storeHeaders, ...customerHeaders } }
+        )
+        expect(approvedEdit.data.review.status).toEqual('approved')
+
+        expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+          {
+            name: 'review.updated',
+            data: { id: staysApproved.id, product_id: 'prod_edit_event_approved' },
+          },
+        ])
+
+        await updateReviewSettingsWorkflow(container).run({
+          input: { allow_edit: true, require_approval: true },
+        })
+
+        const goesPending = await service.createReviews({
+          product_id: 'prod_edit_event_pending',
+          customer_id: customer.id,
+          display_name: 'Ada',
+          rating: 5,
+          content: 'Another review, currently approved and therefore publicly visible.',
+          status: 'approved',
+        })
+
+        emitSpy.mockClear()
+
+        const pendingEdit = await api.post(
+          `/store/reviews/${goesPending.id}`,
+          { content: 'Rewritten content, which sends this review back for moderation.' },
+          { headers: { ...storeHeaders, ...customerHeaders } }
+        )
+        // The review has just LEFT the storefront - the case the event
+        // exists for.
+        expect(pendingEdit.data.review.status).toEqual('pending')
+
+        expect(emittedEvents(emitSpy, REVIEW_WORKFLOW_EVENTS)).toEqual([
+          {
+            name: 'review.updated',
+            // The product whose cached page still shows a review that is
+            // no longer public.
+            data: { id: goesPending.id, product_id: 'prod_edit_event_pending' },
+          },
+        ])
       })
 
       // Fix round 1, CRITICAL: require_approval: false must never let an

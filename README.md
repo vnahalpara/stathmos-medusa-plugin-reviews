@@ -4,24 +4,29 @@ Product reviews for [Medusa v2](https://medusajs.com) with photo and video
 support, a customer media gallery API, merchant replies, helpful votes, and
 moderation settings a merchant can change from the admin without a redeploy.
 
-> **Status: pre-release (Phase 4).** The core review module, photo/video
+> **Status: pre-release (Phase 5).** The core review module, photo/video
 > media, merchant replies, a bundled admin UI, helpful votes, the customer
-> media gallery API, gallery curation and review editing have shipped:
-> submitting, listing, moderating and summarizing reviews; DB-backed
-> settings editable from the admin without a redeploy; photo/video uploads
-> with content-sniffed validation, EXIF stripping, merchant-configurable
-> size/count limits, and an hourly sweep of never-attached uploads; a
-> merchant reply on each review, visible on the storefront only once the
-> review is approved; a "Reviews" admin dashboard route with a moderation
-> queue, bulk actions, a media lightbox (now with pin/hide curation
-> controls), a reply composer and a settings page; helpful votes with
-> database-enforced de-duplication (see
-> [Helpful votes](#helpful-votes) for the guest-dedup caveat); a
-> product-scoped or global customer media gallery
-> (see [Customer media gallery](#customer-media-gallery)); and
-> customer-editable reviews with re-moderation (see
-> [Review editing](#review-editing)). **Not yet implemented: a storefront
-> rendering recipe/JSON-LD and per-endpoint rate limiting** — see
+> media gallery API, gallery curation, review editing, a Next.js storefront
+> recipe, JSON-LD structured data and a cache-revalidation recipe have
+> shipped: submitting, listing, moderating and summarizing reviews;
+> DB-backed settings editable from the admin without a redeploy;
+> photo/video uploads with content-sniffed validation, EXIF stripping,
+> merchant-configurable size/count limits, and an hourly sweep of
+> never-attached uploads; a merchant reply on each review, visible on the
+> storefront only once the review is approved; a "Reviews" admin dashboard
+> route with a moderation queue, bulk actions, a media lightbox (with
+> pin/hide curation controls), a reply composer and a settings page;
+> helpful votes with database-enforced de-duplication (see
+> [Helpful votes](#helpful-votes) for the guest-dedup caveat, and
+> **[docs/storefront-nextjs.md](docs/storefront-nextjs.md) before wiring
+> vote buttons up to a Next.js server action — this is the one mistake in
+> this whole plugin that produces no error at all**); a product-scoped or
+> global customer media gallery (see
+> [Customer media gallery](#customer-media-gallery)); customer-editable
+> reviews with re-moderation (see [Review editing](#review-editing)); and
+> a full [documentation set](#documentation) covering the storefront
+> recipe, every API route, every setting, JSON-LD, and cache revalidation.
+> **Not yet implemented: per-endpoint rate limiting** — see
 > [Roadmap](#roadmap) for what's next. Do not install this from npm yet;
 > it is still pre-release. See [API](#api) for what works today.
 
@@ -32,6 +37,26 @@ moderation. None offers a **media gallery API**, video, DB-backed live
 settings, merchant replies, or helpful votes on v2. Those are the features that
 make review apps like Loox and Judge.me worth paying for, and they are what
 this plugin sets out to cover.
+
+## Screenshots
+
+Real screenshots of the reference Next.js storefront
+([docs/storefront-nextjs.md](docs/storefront-nextjs.md)), captured against
+a live backend with real seeded review data — not mockups.
+
+| PDP reviews section | Review submission form | Customer photo/video gallery |
+|---|---|---|
+| [![PDP reviews section](docs/images/pdp-reviews-section.png)](docs/images/pdp-reviews-section.png) | [![Review submission form](docs/images/review-submission-form.png)](docs/images/review-submission-form.png) | [![Customer gallery page](docs/images/gallery-page.png)](docs/images/gallery-page.png) |
+| Rating summary, breakdown bars, sort control, and review cards with helpful-vote buttons. | The submission form, with the media uploader below the display-name field. | The site-wide UGC wall (`/gallery`), pinned/newest ordering, photo and video tiles. |
+
+**Admin UI screenshots are pending, not omitted.** The bundled admin
+"Reviews" dashboard route (moderation queue, detail drawer, media
+lightbox, reply composer, settings page — see
+[Planned features](#planned-features-v1) and the CHANGELOG's Phase 3
+entry) has been built and covered by integration tests, but it has never
+actually been rendered in a browser and screenshotted in this project.
+Treat the admin UI as functionally complete but visually unverified until
+a future pass adds real admin screenshots here.
 
 ## Planned features (v1)
 
@@ -55,6 +80,19 @@ this plugin sets out to cover.
 
 Deferred to v2: review-request emails, CSV import/export, incentives, Q&A,
 auto-approve rules, profanity filtering.
+
+## Documentation
+
+This README covers installation, every setting, and the API at a glance.
+For depth, see the full docs set:
+
+| Doc | Covers |
+|---|---|
+| [docs/storefront-nextjs.md](docs/storefront-nextjs.md) | The Next.js storefront recipe, extracted from a real build — every component, the data layer, and **why helpful votes must be cast from the browser, never a server action** (read this one first). |
+| [docs/api-reference.md](docs/api-reference.md) | Every store and admin route: parameters, status codes, and exact response shapes, checked against source. |
+| [docs/settings.md](docs/settings.md) | All 14 settings, their defaults, what each gates, and the upgrade caveat (stored settings beat new defaults). |
+| [docs/seo-json-ld.md](docs/seo-json-ld.md) | The JSON-LD shapes the reference storefront emits, and why `aggregateRating` only appears once a product has at least one review. |
+| [docs/revalidation.md](docs/revalidation.md) | The subscriber + route-handler recipe for cache invalidation: all eight subscribed events (an events table with an emitter column — two event names are emitted by more than one workflow), the three cache tags, and why the endpoint needs a shared secret. |
 
 ## Requirements
 
@@ -134,7 +172,11 @@ is safe and recommended to clean it up.
 
 ## API
 
-Twenty-one endpoints ship across Phases 1–4:
+Twenty-one endpoints ship across Phases 1–4 (Phase 5 added no new routes —
+it added the storefront recipe and docs that consume these). For every
+parameter, status code and exact response shape, see
+[docs/api-reference.md](docs/api-reference.md), checked against source
+route by route. The summary below is the quick-reference version:
 
 ```
 POST   /store/reviews                        Submit a review (guest or customer, per settings)
@@ -212,7 +254,7 @@ bundled admin UI's settings page (Settings → Reviews) exposes all 14.
 | `allow_video` | `true` | Lets shoppers attach video, in addition to photos. Has no effect while `allow_media` is off. |
 | `max_media_per_review` | `5` | 0–20. |
 | `max_image_size_mb` | `5` | 1–50. |
-| `max_video_size_mb` | `50` | 1–100. **Values above 100 have no effect.** Uploads are capped at 100MB per file at the transport layer regardless of what this is set to — see [Photo and video uploads](#photo-and-video-uploads). |
+| `max_video_size_mb` | `50` | 1–100. **Cannot be set above 100 — the API rejects it (400).** The bound matches the 100MB-per-file transport-layer ceiling — see [Photo and video uploads](#photo-and-video-uploads). |
 | `allow_edit` | `true` | Lets a signed-in customer edit their own review's rating, title and content after submitting it — see [Review editing](#review-editing). Guests can never edit, regardless of this setting. **The `true` default applies only to a fresh install that has never saved a settings row.** `mergeSettings()` copies a stored value over the new default, so a store that saved settings at any point before Phase 4 keeps its stored `false` and must switch this on itself in Settings → Reviews to enable editing. This is the safe outcome, not an oversight: it is exactly what keeps the riskier `allow_edit: true` + `require_approval: false` pairing from ever appearing silently on an upgrade — that pairing can only exist because a merchant explicitly turned both settings on. |
 | `one_review_per_customer` | `true` | A signed-in customer may submit only one review per product. |
 | `min_content_length` | `10` | 0–1000. |
@@ -640,7 +682,10 @@ storefront will show the old average/count until that product is next
 touched by another write (a new review, or its own moderation action). If
 you build tooling that batches ids across products, call the endpoint once
 per product instead of combining ids from different products in one
-request.
+request. **If you've wired up
+[docs/revalidation.md](docs/revalidation.md)'s recipe, this limitation
+interacts with it badly rather than being independent of it** — see
+[that interaction documented there](docs/revalidation.md#known-interaction-batch-moderation-across-products-makes-this-recipe-re-cache-a-stale-summary).
 
 ## Development
 
@@ -671,8 +716,8 @@ npm test
 | 1 | Core module, settings, moderation, stats ✅ |
 | 2 | Media (images + video), uploads, orphan sweep ✅ |
 | 3 | Merchant replies, admin UI: queue, detail drawer, settings page ✅ |
-| 4 | Helpful votes, gallery API, curation, review editing ✅ ← **you are here** |
-| 5 | Storefront recipe, JSON-LD, docs |
+| 4 | Helpful votes, gallery API, curation, review editing ✅ |
+| 5 | Storefront recipe, JSON-LD, docs ✅ ← **you are here** |
 | 6 | Hardening, second-host validation, `v0.1.0` to npm |
 
 ## Releasing

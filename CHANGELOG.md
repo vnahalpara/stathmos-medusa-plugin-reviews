@@ -8,6 +8,113 @@ editing released sections by hand.
 
 ## Unreleased
 
+Phase 5: a Next.js storefront recipe, JSON-LD structured data, a
+cache-revalidation recipe, and the full documentation set
+(`docs/storefront-nextjs.md`, `docs/api-reference.md`, `docs/settings.md`,
+`docs/seo-json-ld.md`, `docs/revalidation.md`). `src/` changes in this
+release are limited to the additive events needed to make the
+revalidation recipe correct, and one compensation-correctness fix the new
+reply-deletion event exposed — both described below.
+
+**The storefront finding of this phase: helpful votes must be cast from
+the shopper's own browser, never routed through a Next.js `"use server"`
+action or any other server-side wrapper.** The vote route identifies a
+guest voter as `sha256(ip + user-agent + salt)`; called from a server
+action, every guest hands the backend the same server IP and Node
+`fetch` user-agent, so every guest collapses into one `voter_hash` — the
+first guest to vote gets a `201`, everyone else gets a `409` forever, with
+nothing logged anywhere. This was proven, not theorised: three simulated
+shoppers with different browsers, routed through a throwaway server
+action, produced one database row and two `409`s. On a deployment where
+an attacker's own requests reach the backend with the same source IP as
+the storefront (single-box, docker-compose, shared NAT), the collapsed
+identity is also forgeable, letting an attacker withdraw other shoppers'
+votes; on a split deployment with its own egress IP it degrades to guest
+voting silently not working. Forwarding `X-Forwarded-For` from a server
+action is explicitly rejected as a fix — any client can set that header,
+making dedup trivially defeatable and letting an attacker forge a chosen
+victim's hash. See
+[docs/storefront-nextjs.md](docs/storefront-nextjs.md#helpful-votes-must-be-cast-from-the-browser-never-from-a-server-action).
+
+**Several additive events were added to `src/` to make the revalidation
+recipe correct, closing gaps found while building the storefront that
+consumes them:** `review.updated` now also fires from the edit workflow
+(an edit that returns an approved review to `pending` previously left
+cached storefronts serving it for the full cache window); `review.approved`
+now also fires from `createReviewWorkflow` alongside `review.created` when
+a `require_approval: false` store auto-publishes a submission (previously
+the one event meaning "this became publicly visible" never fired on
+auto-approving stores); `review.media.curated` /
+`review.media.deleted` now fire from media curation and deletion (a
+moderator hiding or deleting a photo previously had no way to shrink the
+gallery route's ~6-minute CDN cache window); and, closing the last gap,
+`review.reply.created`/`review.reply.updated` now carry `product_id`
+alongside `review_id` (they previously carried only `review_id`, with
+nothing for a subscriber to invalidate against), and a new
+`review.reply.deleted` event covers a merchant deleting a reply outright —
+the same failure `review.media.deleted` had already closed for photos, one
+surface over. All additive, no schema change. A moderator resetting a
+review to `pending` was also fixed to emit `review.updated` rather than a
+wrongly-fired `review.rejected` — these events are what a future
+notification feature would subscribe to, and the old mapping would have
+emailed a customer "your review was rejected" because a moderator merely
+wanted a second look. See [docs/revalidation.md](docs/revalidation.md) for
+the full recipe: an events table with an emitter column (two event names
+are emitted by more than one workflow, with different payload shapes), all
+eight subscribed events, the three cache tags, and why the endpoint fails
+closed (503) when its shared secret is unset rather than falling open into
+an unauthenticated cache-busting endpoint.
+
+**`deleteReviewReplyStep`'s rollback now restores a deleted reply
+verbatim — same id, same `created_at`/`updated_at` — instead of
+recreating it as a fresh row.** This compensation path was documented as
+lossy from Phase 3 onward but was inert: `deleteReviewReplyWorkflow` had
+only one step, so nothing downstream could ever fail and trigger a
+rollback. Adding `emitEventStep` for `review.reply.deleted` in this same
+phase made it reachable in production for the first time — an event-bus
+failure now rolls the delete back for real, on a merchant's actual reply
+— so the lossy restore stopped being a documented-but-harmless gap and
+became a real one: a reply written months ago would come back stamped
+"just now," under a new id anything already holding the old one (an open
+admin tab, a log line) would no longer resolve to. Fixed by snapshotting
+and re-inserting the full row, verified by a test that backdates a reply
+specifically so a timestamp assertion can't pass by the coincidence of
+running moments after the original write.
+
+**Limitations documented, not fixed, in this phase** — each is a
+deliberate trade-off with its reasoning written down in
+[docs/storefront-nextjs.md](docs/storefront-nextjs.md#limitations-stated-plainly):
+signed-in shoppers are deduped as guests unless a host configures Medusa
+session auth on the backend origin; there is no `voted_by_me` on the
+review list (computing it per-viewer would make a public, CDN-cacheable
+response per-viewer, and would mean hashing on a read path for guests);
+review ownership for the storefront's Edit control is tracked in
+`localStorage`, since the store API deliberately never exposes
+`customer_id`; `helpful_count` is never revalidated by cache-invalidation
+events, since votes emit none on purpose — the vote button self-corrects
+from the authoritative count on every interaction instead; `thumbnail_url`
+is always `null` in this version, with no video poster generation yet; and
+the gallery route's real worst-case cache staleness is ~360 seconds
+(`s-maxage=60` + `stale-while-revalidate=300`), not the 60-second figure
+in isolation.
+
+JSON-LD: `docs/seo-json-ld.md` documents the `Product`/`AggregateRating`/
+`Review` shapes the reference storefront emits, verified against rendered
+HTML for both a reviewed and an unreviewed product. `aggregateRating`
+(and the `review` array) are present if and only if the product has at
+least one review — an `AggregateRating` with `reviewCount: 0` is invalid
+structured data and risks a manual action for fabricating a rating nobody
+gave.
+
+README: linked the full docs set, and added real screenshots of the
+storefront (PDP reviews section, submission form, gallery page) captured
+against a live backend with seeded review data. Admin UI screenshots are
+explicitly noted as pending, not silently omitted — the bundled admin
+dashboard has been built and tested but never rendered in a browser and
+screenshotted in this project.
+
+Not implemented: per-endpoint rate limiting (Phase 6).
+
 Phase 4: helpful votes, the customer media gallery API, gallery curation,
 and review editing. `review_vote` dedupes a signed-in customer by
 `customer_id` and a guest by `voter_hash` (`sha256(ip + user-agent +
